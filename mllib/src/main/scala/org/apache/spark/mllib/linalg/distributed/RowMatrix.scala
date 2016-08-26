@@ -20,11 +20,15 @@ package org.apache.spark.mllib.linalg.distributed
 import java.util.Arrays
 
 import scala.collection.mutable.ListBuffer
+import scala.util.Random
 
-import breeze.linalg.{axpy => brzAxpy, inv, svd => brzSvd, DenseMatrix => BDM, DenseVector => BDV,
+import breeze.linalg.{axpy => brzAxpy, shuffle, svd => brzSvd, DenseMatrix => BDM, DenseVector => BDV,
   MatrixSingularException, SparseVector => BSV}
+import breeze.math.{i, Complex}
 import breeze.numerics.{sqrt => brzSqrt}
+import breeze.signal.{fourierTr, iFourierTr}
 
+import org.apache.spark.SparkContext
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
@@ -270,23 +274,7 @@ class RowMatrix @Since("1.0.0") (
     val sigmas: BDV[Double] = brzSqrt(sigmaSquares)
 
     // Determine the effective rank.
-    val sigma0 = sigmas(0)
-    val threshold = rCond * sigma0
-    var i = 0
-    // sigmas might have a length smaller than k, if some Ritz values do not satisfy the convergence
-    // criterion specified by tol after max number of iterations.
-    // Thus use i < min(k, sigmas.length) instead of i < k.
-    if (sigmas.length < k) {
-      logWarning(s"Requested $k singular values but only found ${sigmas.length} converged.")
-    }
-    while (i < math.min(k, sigmas.length) && sigmas(i) >= threshold) {
-      i += 1
-    }
-    val sk = i
-
-    if (sk < k) {
-      logWarning(s"Requested $k singular values but only found $sk nonzeros.")
-    }
+    val sk = determineRank(k, sigmas, rCond)
 
     // Warn at the end of the run as well, for increased visibility.
     if (computeMode == SVDMode.DistARPACK && rows.getStorageLevel == StorageLevel.NONE) {
@@ -316,6 +304,37 @@ class RowMatrix @Since("1.0.0") (
     } else {
       SingularValueDecomposition(null, s, V)
     }
+  }
+
+  /**
+    * Determine the effective rank
+    *
+    * @param k number of singular values to keep. We might return less than k if there are
+    *          numerically zero singular values. See rCond.
+    * @param sigmas singular values of matrix
+    * @param rCond the reciprocal condition number. All singular values smaller
+    *              than rCond * sigma(0) are treated as zero, where sigma(0) is
+    *              the largest singular value.
+    * @return a [[Int]]
+    */
+  def determineRank(k: Int, sigmas: BDV[Double], rCond: Double): Int = {
+    // Determine the effective rank.
+    val sigma0 = sigmas(0)
+    val threshold = rCond * sigma0
+    var i = 0
+    // sigmas might have a length smaller than k, if some Ritz values do not satisfy the convergence
+    // criterion specified by tol after max number of iterations.
+    // Thus use i < min(k, sigmas.length) instead of i < k.
+    if (sigmas.length < k) {
+      logWarning(s"Requested $k singular values but only found ${sigmas.length} converged.")
+    }
+    while (i < math.min(k, sigmas.length) && sigmas(i) >= threshold) {
+      i += 1
+    }
+    if (i < k) {
+      logWarning(s"Requested $k singular values but only found $i nonzeros.")
+    }
+    i
   }
 
   /**
@@ -454,6 +473,287 @@ class RowMatrix @Since("1.0.0") (
   }
 
   /**
+    * Compute SVD decomposition for [[RowMatrix]]. The implementation is
+    * designed to optimize the SVD decomposition (factorization) for the
+    * [[RowMatrix]] of a tall and skinny shape. We multiply the matrix being
+    * processed by a random orthogonal matrix in order to mix the columns,
+    * obviating the need for pivoting.
+    * References:
+    *   Benson, Austin R., David F. Gleich, and James Demmel. "Direct QR
+    *   factorizations for tall-and-skinny matrices in MapReduce
+    *   architectures."    ([[http://arxiv.org/abs/1301.1071]])
+    *   Parker, Douglass Stott, and Brad Pierce. The randomizing FFT: an
+    *   alternative to pivoting in Gaussian elimination. University of
+    *   California (Los Angeles). Computer Science Department, 1995.
+    *   Le, Dinh, and D. Stott Parker. "Using randomization to make recursive
+    *   matrix algorithms practical." Journal of Functional Programming
+    *   9.06 (1999): 605-624.
+    *
+    * @param sc SparkContext used in an intermediate step which converts an
+    *           upper triangular matrix to RDD[Vector].
+    * @param k number of singular values to keep. We might return less than k
+    *          if there are numerically zero singular values. See rCond.
+    * @param computeU whether to compute U
+    * @param rCond the reciprocal condition number. All singular values smaller
+    *              than rCond * sigma(0) are treated as zero, where sigma(0) is
+    *              the largest singular value.
+    * @param iteration number of times to run multiplyDFS.
+    * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
+    */
+  @Since("2.0.0")
+  def tallSkinnySVD(sc: SparkContext, k: Int, computeU: Boolean = false,
+                    rCond: Double = 1e-12, iteration: Int = 2):
+  SingularValueDecomposition[RowMatrix, Matrix] = {
+
+    /**
+      * Convert [[Matrix]] to [[RDD[Vector]]]
+      * @param mat an [[Matrix]].
+      * @param sc SparkContext used to create RDDs.
+      * @return RDD[Vector].
+      */
+    def toRDD(mat: Matrix, sc: SparkContext): RDD[Vector] = {
+      // Convert mat to Sequence of DenseVector
+      val columns = mat.toArray.grouped(mat.numRows)
+      val rows = columns.toSeq.transpose
+      val vectors = rows.map(row => new DenseVector(row.toArray))
+      // Create RDD[Vector]
+      sc.parallelize(vectors)
+    }
+
+    require(k > 0 && k <= numCols().toInt,
+      s"Requested k singular values but got k=$k and numCols=$numCols().toInt.")
+    // Convert the input RowMatrix A to another RowMatrix B by multiplying with
+    // a random matrix, discrete fourier transform, and random shuffle,
+    // i.e. A * Q = B where Q = D * F * S. Repeat several times, according to
+    // the number of iterations specified by iteration.
+    val (aq, randUnit, randIndex) = multiplyDFS(iteration,
+      isForward = true, null, null)
+
+    // Apply tallSkinnyQR to B in order to produce the factorization B = Q*R.
+    val qrResult = aq.tallSkinnyQR(computeQ = true)
+
+    // convert R to RowMatrix
+    val RrowMat = new RowMatrix(toRDD(qrResult.R, sc))
+
+    // Convert RrowMat back by reverse shuffle, inverse fourier transform,
+    // and dividing random matrix, i.e. R * Q^T = R * S^{-1} * F^{-1} * D^{-1}.
+    // Repeat several times, according to the number of iterations specified
+    // by iteration.
+    val (rq, _, _) = RrowMat.multiplyDFS(iteration,
+      isForward = false, randUnit, randIndex)
+
+    // Apply SVD on R * Q^T.
+    val brzSvd.SVD(w, s, vt) = brzSvd.reduced.apply(rq.toBreeze())
+
+    // Determine the effective rank.
+    val rank = determineRank(k, s, rCond)
+    // Truncate S, V.
+    val sk = Vectors.fromBreeze(s(0 until rank))
+    val VMat = Matrices.dense(rank, numCols().toInt, vt(0 until rank,
+      0 until numCols().toInt).toArray).transpose
+    if (computeU) {
+      // Truncate W.
+      val WMat = Matrices.dense(qrResult.R.numRows, rank,
+        Arrays.copyOfRange(w.toArray, 0, qrResult.R.numRows * rank))
+      // U = Q * W.
+      val U = qrResult.Q.multiply(WMat)
+      SingularValueDecomposition(U, sk, VMat)
+    } else {
+      SingularValueDecomposition(null, sk, VMat)
+    }
+  }
+
+  /**
+    * Given a m-by-2n or m-by-(2n+1) real [[RowMatrix]], convert it to m-by-n
+    * complex [[RowMatrix]]. Multiply this m-by-n complex [[RowMatrix]] by a
+    * random diagonal n-by-n [[BDM[Complex]] D, discrete fourier transform F,
+    * and random shuffle n-by-n [[BDM[Int]]] S with a given [[Int]] k number of
+    * times, and convert it back to m-by-2n real [[RowMatrix]];
+    * or backwards, i.e., convert it from real to complex, apply reverse
+    * random shuffle n-by-n [[BDM[Int]]] S^{-1}, inverse fourier transform
+    * F^{-1}, dividing the given random diagonal n-by-n [[BDM[Complex]] D
+    * with a given [[Int]] k number of times, and convert it from complex
+    * to real.
+    *
+    * References:
+    *   Parker, Douglass Stott, and Brad Pierce. The randomizing FFT: an
+    *   alternative to pivoting in Gaussian elimination. University of
+    *   California (Los Angeles). Computer Science Department, 1995.
+    *   Le, Dinh, and D. Stott Parker. "Using randomization to make recursive
+    *   matrix algorithms practical." Journal of Functional Programming
+    *   9.06 (1999): 605-624.
+    *   Ailon, Nir, and Edo Liberty. "An almost optimal unrestricted fast
+    *   Johnson-Lindenstrauss transform." ACM Transactions on Algorithms (TALG)
+    *   9.3 (2013): 21.
+    *
+    * @note The entries with the same column index of input [[RowMatrix]] are
+    *       multiplied by the same random number, and shuffle to the same place.
+    *
+    * @param iteration k number of times applying D, F, and S.
+    * @param isForward whether to apply D, F, S forwards or backwards.
+    *                  If backwards, then needs to specify rUnit and rIndex.
+    * @param rUnit a complex k-by-n matrix such that each entry is a complex
+    *              number with absolute value 1.
+    * @param rIndex an integer k-by-n matrix such that each row is a random
+    *               permutation of the integers 1, 2, ..., n.
+    * @return transformed m-by-2n or m-by-(2n+1) RowMatrix, a complex k-by-n
+    *         matrix, and an int k-by-n matrix.
+    */
+  @Since("2.0.0")
+  def multiplyDFS(iteration: Int = 2, isForward: Boolean, rUnit: BDM[Complex],
+                  rIndex: BDM[Int]): (RowMatrix, BDM[Complex], BDM[Int]) = {
+
+    /**
+      * Given a 1-by-2n [[BDV[Double]] arr, either do D, F, S forwards with
+      * [[Int]] iteration k times if [[Boolean]] isForward is true;
+      * or S, F, D backwards with [[Int]] iteration k times if [[Boolean]]
+      * isForward is false.
+      *
+      * @param iteration k number of times applying D, F, and S.
+      * @param isForward whether to apply D, F, S forwards or backwards.
+      *                  If backwards, then needs to specify rUnit and rIndex.
+      * @param randUnit a complex k-by-n such that each entry is a complex number
+      *              with absolute value 1.
+      * @param randIndex an integer k-by-n matrix such that each row is a random
+      *                  permutation of the integers 1, 2, ..., n.
+      * @param arr a 1-by-2n row vector.
+      * @return a 1-by-2n row vector.
+      */
+    def dfs(iteration: Int, isForward: Boolean, randUnit: BDM[Complex],
+            randIndex: BDM[Int], arr: BDV[Double]): Vector = {
+
+      // Either keep arr or add an extra entry with value 0 so that
+      // number of indices is even.
+      val input = {
+        if (arr.length % 2 == 1) {
+          BDV.vertcat(arr, BDV.zeros[Double](1))
+        } else {
+          arr
+        }
+      }
+
+      // convert input from real to complex.
+      var inputComplex = realToComplex(input)
+      if (isForward) {
+        // Apply D, F, S to the input iteration times.
+        for (i <- 0 until iteration) {
+          // Element-wise multiplication with randUnit.
+          val inputMul = inputComplex :* randUnit(i, ::).t
+          // Discrete Fourier transform.
+          val inputFFT = fourierTr(inputMul).toArray
+          // Random shuffle.
+          val shuffleIndex = randIndex(i, ::).t.toArray
+          inputComplex = BDV(shuffle(inputFFT, shuffleIndex, false))
+        }
+      } else {
+        // Apply S^{-1}, F^{-1}, D^{-1} to the input iteration times.
+        for (i <- iteration - 1 to 0 by -1) {
+          // Reverse shuffle.
+          val shuffleIndex = randIndex(i, ::).t.toArray
+          val shuffleBackArr = shuffle(inputComplex.toArray, shuffleIndex, true)
+          // Inverse Fourier transform.
+          val inputIFFT = iFourierTr(BDV(shuffleBackArr))
+          // Element-wise divide with randUnit.
+          inputComplex = inputIFFT :/ randUnit(i, ::).t
+        }
+      }
+      Vectors.fromBreeze(complexToReal(inputComplex))
+    }
+
+    /**
+      * Given [[Int]] k and [[Int]] n, generate a k-by-n [[BDM[Complex]]] such
+      * that each entry has absolute value 1 and a k-by-n [[BDM[Int]]] such
+      * that each row is a random permutation of integers from 1 to n.
+      *
+      * @param iteration k number of rows for D and S.
+      * @param nCols the number of columns n.
+      * @return a k-by-n complex matrix and a k-by-n int matrix.
+      */
+    def generateDS(iteration: Int = 2, nCols: Int): (BDM[Complex], BDM[Int]) = {
+      val shuffleIndex = new BDM[Int](iteration, nCols)
+      val randUnit = new BDM[Complex](iteration, nCols)
+      for (i <- 0 until iteration) {
+        // Random permuatation of integers from 1 to n.
+        shuffleIndex(i, ::) := shuffle(BDV.tabulate(nCols)(i => i)).t
+        // Generate random complex number with absolute value 1. These random
+        // complex numbers are uniformly distributed over the unit circle.
+        for (j <- 0 until nCols) {
+          val randComplex = Complex(Random.nextGaussian(),
+            Random.nextGaussian())
+          randUnit(i, j) = randComplex / randComplex.abs
+        }
+      }
+      (randUnit, shuffleIndex)
+    }
+
+    /**
+      * Convert a 2n-by-1 [[BDV[Double]]] u to n-by-1 [[BDV[Complex]]] v. The
+      * odd index entry of u changes to the real part of each entry in v. The
+      * even index entry of u changes to the imaginary part of each entry in v.
+      * Please note that "index" here refers to "1-based indexing" rather than
+      * "0-based indexing."
+      *
+      * @param arr 2n-by-1 real vector.
+      * @return n-by-1 complex vector.
+      */
+    def realToComplex(arr: BDV[Double]): BDV[Complex] = {
+      // Odd entries transfer to real part.
+      val odd = arr(0 until arr.length by 2).map(v => v + i * 0)
+      // Even entries transfer to imaginary part.
+      val even = arr(1 until arr.length by 2).map(v => i * v)
+      // Combine real part and imaginary part.
+      odd + even
+    }
+
+    /**
+      * Convert a n-by-1 [[BDV[Complex]]] v to 2n-by-1 [[BDV[Double]]] u. The
+      * the real part of each entry in v changes to the odd index entry of u.
+      * The imaginary part of each entry in v changes to the even index entry
+      * uf u. Please note that "index" here refers to "1-based indexing" rather
+      * than "0-based indexing."
+      *
+      * @param arr n-by-1 complex vector.
+      * @return 2n-by-1 real vector.
+      */
+    def complexToReal(arr: BDV[Complex]): BDV[Double] = {
+      // Filter out the real part.
+      val reconReal = arr.map(v => v.real)
+      // Filter out the imaginary part.
+      val reconImag = arr.map(v => v.imag)
+      // Concatenate the real and imaginary part.
+      BDV.horzcat(reconReal, reconImag).t.toDenseVector
+    }
+
+    // Either generate D and S or take them from the input.
+    val (randUnit, randIndex) = {
+      if (isForward) {
+        generateDS(iteration, (numCols().toInt + 1) / 2)
+      } else {
+        (rUnit, rIndex)
+      }
+    }
+
+    // Apply DFS forwards or backwards to the input RowMatrix.
+    val AB = rows.mapPartitions( iter =>
+      if (iter.nonEmpty) {
+        val temp = iter.toArray
+        val tempAfter = new Array[Vector](temp.length)
+        for (i <- temp.indices) {
+          tempAfter(i) = dfs(iteration, isForward, randUnit, randIndex,
+            BDV(temp(i).toArray))
+        }
+        Iterator.tabulate(temp.length)(tempAfter(_))
+      } else {
+        Iterator.empty
+      }
+    )
+
+    // Generate the output RowMatrix with even number of columns
+    val n = if (nCols % 2 == 0) nCols else nCols + 1
+    (new RowMatrix(AB, nRows, n), randUnit, randIndex)
+  }
+
+  /**
    * Compute all cosine similarities between columns of this matrix using the brute-force
    * approach of computing normalized dot products.
    *
@@ -535,6 +835,47 @@ class RowMatrix @Since("1.0.0") (
    */
   @Since("1.5.0")
   def tallSkinnyQR(computeQ: Boolean = false): QRDecomposition[RowMatrix, Matrix] = {
+    /**
+      * Solve Q*R = A for Q using forward substitution where A = [[RowMatrix]]
+      * and R is upper-triangular. If the (i,i)th entry of R is close to 0, then
+      * we set the ith column of Q to 0, as well.
+      *
+      * @param R upper-triangular matrix
+      * @return Q [[RowMatrix]] such that Q*R = A.
+      */
+    def forwardSolve(R: breeze.linalg.DenseMatrix[Double]):
+    RowMatrix = {
+      val m = rows.count()
+      val n = R.cols
+      val Bb = rows.context.broadcast(R.toArray)
+
+      val AB = rows.mapPartitions { iter =>
+        val LHS = Bb.value
+        val LHSMat = Matrices.dense(n, n, LHS).asBreeze
+        val FNorm = Vectors.norm(Vectors.dense(LHS), 2.0)
+        iter.map { row =>
+          val RHS = row.asBreeze.toArray
+          val v = BDV.zeros[Double] (n)
+          // We don't use LAPACK here since it will be numerically unstable if
+          // R is singular. If R is singular, we set the corresponding
+          // column of Q to 0.
+          for ( i <- 0 until n) {
+            if (math.abs(LHSMat(i, i)) > 1.0e-15 * FNorm) {
+              var sum = 0.0
+              for ( j <- 0 until i) {
+                sum += LHSMat(j, i) * v(j)
+              }
+              v(i) = (RHS(i) - sum) / LHSMat(i, i)
+            } else {
+              v(i) = 0.0
+            }
+          }
+          Vectors.fromBreeze(v)
+        }
+      }
+      new RowMatrix(AB, m, n)
+    }
+
     val col = numCols().toInt
     // split rows horizontally into smaller matrices, and compute QR for each of them
     val blockQRs = rows.retag(classOf[Vector]).glom().filter(_.length != 0).map { partRows =>
@@ -556,8 +897,7 @@ class RowMatrix @Since("1.0.0") (
     val finalR = Matrices.fromBreeze(combinedR.toDenseMatrix)
     val finalQ = if (computeQ) {
       try {
-        val invR = inv(combinedR)
-        this.multiply(Matrices.fromBreeze(invR))
+        forwardSolve(combinedR)
       } catch {
         case err: MatrixSingularException =>
           logWarning("R is not invertible and return Q as null")

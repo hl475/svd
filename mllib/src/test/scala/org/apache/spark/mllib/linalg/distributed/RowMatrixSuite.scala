@@ -298,6 +298,48 @@ class RowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
     qrResult.R.toArray.zip(qrResult2.R.toArray)
       .foreach(x => assert(x._1 ~== x._2 relTol 1E-8, "R matrix not match"))
   }
+
+  test("tallSkinnySVD of a full-rank matrix") {
+    for (mat <- Seq(denseMat, sparseMat)) {
+      val localMat = mat.toBreeze()
+      val brzSvd.SVD(localU, localSigma, localVt) = brzSvd(localMat)
+      val localV: BDM[Double] = localVt.t.toDenseMatrix
+      val k = n
+      val svd = mat.tallSkinnySVD(sc, k, computeU = true)
+      val U = svd.U
+      val s = svd.s
+      val V = svd.V
+      assert(U.numRows() === m)
+      assert(U.numCols() === k)
+      assert(s.size === k)
+      assert(V.numRows === n)
+      assert(V.numCols === k)
+      assertColumnEqualUpToSign(U.toBreeze(), localU, k)
+      assertColumnEqualUpToSign(V.asBreeze.asInstanceOf[BDM[Double]], localV, k)
+      assert(closeToZero(s.asBreeze.asInstanceOf[BDV[Double]] - localSigma(0 until k)))
+      val svdWithoutU = mat.tallSkinnySVD(sc, k, computeU = false)
+      assert(svdWithoutU.U === null)
+    }
+  }
+
+  test("tallSkinnySVD of a low-rank matrix") {
+    val rows = sc.parallelize(Array.fill(4)(Vectors.dense(1.0, 1.0, 1.0)), 2)
+    val mat = new RowMatrix(rows, 4, 3)
+    val svd = mat.tallSkinnySVD(sc, 2, computeU = true, 1e-6)
+    assert(svd.s.size === 1, s"should not return zero singular values but got ${svd.s}")
+    assert(svd.U.numRows() === 4)
+    assert(svd.U.numCols() === 1)
+    assert(svd.V.numRows === 3)
+    assert(svd.V.numCols === 1)
+  }
+
+  test("validate k in tallSkinnySVD") {
+    for (mat <- Seq(denseMat, sparseMat)) {
+      intercept[IllegalArgumentException] {
+        mat.tallSkinnySVD(sc, -1)
+      }
+    }
+  }
 }
 
 class RowMatrixClusterSuite extends SparkFunSuite with LocalClusterSparkContext {
