@@ -18,13 +18,20 @@
 package org.apache.spark.mllib.linalg.distributed
 
 import scala.collection.mutable.ArrayBuffer
+import scala.util.Random
 
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV}
+import breeze.linalg.{eigSym, svd => brzSvd, DenseMatrix => BDM,
+  DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV}
+import breeze.linalg.eigSym.EigSym
+import breeze.numerics.ceil
+import com.github.fommil.netlib.LAPACK.{getInstance => lapack}
+import org.netlib.util.intW
 
-import org.apache.spark.{Partitioner, SparkException}
+import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
+import org.apache.spark.mllib.stat.Statistics
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 
@@ -496,5 +503,400 @@ class BlockMatrix @Since("1.3.0") (
       throw new SparkException("colsPerBlock of A doesn't match rowsPerBlock of B. " +
         s"A.colsPerBlock: $colsPerBlock, B.rowsPerBlock: ${other.rowsPerBlock}")
     }
+  }
+
+  def iterativeRefinemet(B: BlockMatrix): BlockMatrix = {
+    // Compute Gram matrix of B.
+    val gramMat = B.toIndexedRowMatrix().toRowMatrix().
+      computeGramianMatrix().asBreeze.toDenseMatrix
+    // compute the eigenvalue decomposition of gramMat
+    // such that gramMat = U * D * U'.
+    val EigSym(eigenValues, eigenVectors) = eigSym(gramMat)
+    // println("EigenValues")
+    // println(eigenValues)
+
+    val eigenRank = {
+      var i = eigenValues.length - 1
+      while (i >= 0 && eigenValues(i) > 1.0e-15 *
+        eigenValues(eigenValues.length - 1)) i = i - 1
+      i + 1
+    }
+
+    // val eigenRank = 0
+    // println("EigenRank")
+    // println(eigenValues.length - eigenRank)
+    val EigenVectors = eigenVectors(::, eigenVectors.cols - 1 to eigenRank by -1)
+    // Calculate Q such that Q = B * U and normalize Q such that each column of
+    // Q has norm 1.
+
+    val U = Matrices.dense(EigenVectors.rows, EigenVectors.cols,
+      eigenVectors(::, eigenVectors.cols - 1 to eigenRank by -1).toArray)
+
+    val Q = B.toIndexedRowMatrix().multiply(U)
+    val normQ = Vectors.fromBreeze(1.0 / Statistics.colStats(Q.toRowMatrix().rows).
+      normL2.asBreeze.toDenseVector)
+    Q.multiply(Matrices.diag(normQ)).toBlockMatrix(B.rowsPerBlock, B.colsPerBlock)
+  }
+
+  /**
+    * Computes the randomized singular value decomposition of this BlockMatrix.
+    * Denote this matrix by A (m x n), this will compute matrices U, S, V such
+    * that A = U * S * V', where the columns of U are orthonormal, S is a
+    * diagonal matrix with non-negative real numbers on the diagonal, and the
+    * columns of V are orthonormal.
+    *
+    * At most k largest non-zero singular values and associated vectors are
+    * returned. If there are k such values, then the dimensions of the return
+    * will be:
+    *  - U is a RowMatrix of size m x k that satisfies U' * U = eye(k),
+    *  - s is a Vector of size k, holding the singular values in
+    *  descending order,
+    *  - V is a Matrix of size n x k that satisfies V' * V = eye(k).
+    *
+    * @param k number of singular values to keep. We might return less than k
+    *          if there are numerically zero singular values.
+    * @param sc SparkContext, use to generate the random gaussian matrix.
+    * @param computeU whether to compute U.
+    * @param isQR whether to use tallSkinnyQR or Cholesky decomposition and
+    *             a forward solve for matrix orthonormalization.
+    * @param iteration number of normalized power iterations to conduct.
+    * @param isRandom whether or not fix seed to generate random matrix.
+    * @return SingularValueDecomposition(U, s, V).
+    */
+  @Since("2.0.0")
+  def partialSVD(k: Int, sc: SparkContext, computeU: Boolean = false,
+                 isQR: Boolean = true, iteration: Int = 2,
+                 isRandom: Boolean = true):
+  SingularValueDecomposition[BlockMatrix, Matrix] = {
+
+    /**
+      * Generate a random [[BlockMatrix]] to compute the singular
+      * value decomposition.
+      *
+      * @param k number of columns in this random [[BlockMatrix]].
+      * @param sc a [[SparkContext]] to generate the random [[BlockMatrix]].
+      * @return a random [[BlockMatrix]].
+      *
+      * @note the generated random [[BlockMatrix]] V has colsPerBlock for the
+      *       number of rows in each block, and rowsPerBlock for the number
+      *       of columns in each block. We will perform matrix multiplication
+      *       with A, i.e., A * V. We want the number of rows in each block
+      *       of V to be same as the number of columns in each block A.
+      */
+    def generateRandomMatrices(k: Int, sc: SparkContext): BlockMatrix = {
+      val limit = 65535
+      if (numCols().toInt < limit) {
+        val data = Seq.tabulate(numCols().toInt)(n =>
+          (n.toLong, Vectors.fromBreeze(BDV.rand(k))))
+          .map(x => IndexedRow(x._1, x._2))
+        val indexedRows: RDD[IndexedRow] = sc.parallelize(data,
+          createPartitioner().numPartitions)
+        new IndexedRowMatrix(indexedRows).
+          toBlockMatrix(colsPerBlock, rowsPerBlock)
+      } else {
+        // Generate a n-by-k BlockMatrix: we first generate a sequence of
+        // RDD[Vector] where each RDD[Vector] contains either 65535 rows or
+        // n mod 65535 rows. The number of elements in the sequence is
+        // ceiling(n/65535).
+        val num = ceil(numCols().toFloat/limit).toInt
+        val rddsBlock = Seq.tabulate(num)(m =>
+          sc.parallelize(Seq.tabulate(if (m < numCols/limit) limit
+          else numCols().toInt%limit)(n => (m.toLong * limit + n,
+            Vectors.fromBreeze(BDV.rand(k))))
+            .map(x => IndexedRow(x._1, x._2)),
+            createPartitioner().numPartitions))
+        val rddBlockSeq = sc.union(rddsBlock)
+        new IndexedRowMatrix(rddBlockSeq).
+          toBlockMatrix(colsPerBlock, rowsPerBlock)
+      }
+    }
+
+
+
+    /**
+      * Computes the partial singular value decomposition of the[[BlockMatrix]]
+      * A given an [[BlockMatrix]] Q such that A' is close to A' * Q * Q'.
+      * The columns of Q are orthonormal.
+      *
+      * @param Q a [[BlockMatrix]] with orthonormal columns.
+      * @param k number of singular values to compute.
+      * @param computeU whether to compute U.
+      * @param isQR whether to use tallSkinnySVD.
+      * @return SingularValueDecomposition[U, s, V], U = null
+      *         if computeU = false.
+      *
+      * @note if isQR is false, then we find SVD of B = X * S * V' via the
+      *       following steps: Compute gram matrix G of B; find eigenvalue
+      *       decomposition of G such that G = U * D * U'; calculate
+      *       R = U * sqrt(D); find singular value decomposition of R such that
+      *       R = Y * S * V'; calculate Q such that B = Q * R = Q * Y * S * V'
+      *       = X * S * V' where X = Q * Y.
+      */
+    def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean,
+                 isQR: Boolean, sc: SparkContext):
+    SingularValueDecomposition[BlockMatrix, Matrix] = {
+      // B = A' * Q
+      // val Q1 = iterativeRefinemet(Q)
+      val Q1 = Q
+      val B = transpose.multiply(Q1)
+      // Find SVD such that B = X * S * V'.
+      val (svdResult, indices) = if (isQR) {
+        (B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc, k,
+          computeU = true, rCond = 1.0e-15), B.toIndexedRowMatrix().rows.map(_.index))
+      } else {
+        // val QofB = iterativeRefinemet(iterativeRefinemet(B))
+        val QofB = iterativeRefinemet(B)
+        val R = B.transpose.multiply(QofB).transpose
+        // Compute svd of R such that R = W * S * V'.
+        val brzSvd.SVD(w, s, vt) = brzSvd.reduced.apply(R.toBreeze())
+        val WMat = Matrices.fromBreeze(w)
+        val sk = Vectors.fromBreeze(s)
+        val VMat = Matrices.fromBreeze(vt).transpose
+        // Return svd of B.
+        (SingularValueDecomposition(QofB.toIndexedRowMatrix().toRowMatrix().
+          multiply(WMat), sk, VMat), QofB.toIndexedRowMatrix().rows.map(_.index))
+      }
+
+      val indexedRows = indices.zip(svdResult.U.rows).map { case (i, v) =>
+        IndexedRow(i, v) }
+      // U = Q * X and V = W and convert type
+      val VMat = new IndexedRowMatrix(indexedRows, B.numRows().toInt,
+        svdResult.s.size)
+      val V = Matrices.fromBreeze(VMat.toBreeze())
+
+      if (computeU) {
+        val XMat = svdResult.V
+        val U = Q1.toIndexedRowMatrix().multiply(XMat).toBlockMatrix()
+        SingularValueDecomposition(U, svdResult.s, V)
+      } else {
+        SingularValueDecomposition(null, svdResult.s, V)
+      }
+    }
+
+    // Whether to set the random seed or not. Set the seed would help debug.
+    if (!isRandom) {
+      Random.setSeed(513427689.toLong)
+    }
+    val V = generateRandomMatrices(k, sc)
+    // V = A * V, with the V on the left now known as x.
+    val x = multiply(V)
+    // Orthonormalize V (now known as x).
+    var y = x.orthonormal(isQR, isTranspose = true, sc)
+
+    for (i <- 0 until iteration) {
+      // V = A' * V,  with the V on the left now known as a, and the V on
+      // the right known as y.
+      val a = transpose.multiply(y)
+      // Orthonormalize V (now known as a).
+      val b = a.orthonormal(isQR, isTranspose = false, sc)
+      // V = A * V, with the V on the left now known as c, and the V on
+      // the right known as b.
+      val c = multiply(b)
+      // Orthonormalize V (now known as c).
+      y = c.orthonormal(isQR, isTranspose = true, sc)
+    }
+    // Find SVD of A using V (now known as y).
+    lastStep(y, k, computeU, isQR, sc)
+  }
+
+
+  /**
+    * Orthonormalize the columns of the [[BlockMatrix]] V by using either QR
+    * decomposition or Cholesky decomposition and forward solve. We convert V
+    * to [[RowMatrix]] first, then either (1) directly apply tallSkinnyQR or
+    * (2) compute the Gram matrix G of V, then apply Cholesky decomposition
+    * on G to get the upper triangular matrix R, and apply forward solve to
+    * find Q such that Q * R = V where the columns of Q are orthonormal (so
+    * that Q' * Q is the identity matrix).
+    *
+    * @param isQR whether to use tallSkinnyQR or Cholesky decomposition and
+    *             a forward solve for matrix orthonormalization.
+    * @param isTranspose whether to switch colsPerBlock and rowsPerBlock.
+    * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
+    *
+    * @note if isQR is false, it will lose half or more of the precision
+    * of the arithmetic but could accelerate the computation.
+    */
+  @Since("2.0.0")
+  def orthonormal(isQR: Boolean = true, isTranspose: Boolean = false,
+                  sc: SparkContext): BlockMatrix = {
+    /**
+      * Convert [[Matrix]] to [[RDD[Vector]]]
+      * @param mat an [[Matrix]].
+      * @param sc SparkContext used to create RDDs.
+      * @return RDD[Vector].
+      */
+    def toRDD(mat: Matrix, sc: SparkContext, numPar: Int): RDD[Vector] = {
+      // Convert mat to Sequence of DenseVector
+      val columns = mat.toArray.grouped(mat.numRows)
+      val rows = columns.toSeq.transpose
+      val vectors = rows.map(row => new DenseVector(row.toArray))
+      // Create RDD[Vector]
+      sc.parallelize(vectors, numPar)
+    }
+
+    /**
+      * Solve Q*R = A for Q using forward substitution where
+      * A = [[IndexedRowMatrix]] and R is upper-triangular.
+      *
+      * @param A [[IndexedRowMatrix]].
+      * @param R upper-triangular matrix.
+      * @return Q [[IndexedRowMatrix]] such that Q*R = A.
+      */
+    def forwardSolve(A: IndexedRowMatrix, R: BDM[Double]):
+    IndexedRowMatrix = {
+      // Convert A to RowMatrix.
+      val rowMat = A.toRowMatrix()
+      val Bb = rowMat.rows.context.broadcast(R.toArray)
+      // Solving Q by using forward substitution.
+      val AB = rowMat.rows.mapPartitions { iter =>
+        val Bi = Bb.value
+        iter.map { row =>
+          val info = new intW(0)
+          val B = row.asBreeze.toArray
+          lapack.dtrtrs("L", "N", "N", R.cols, 1, Bi, R.cols, B, R.cols, info)
+          Vectors.dense(B)
+        }
+      }
+      // Form Q as RowMatrix and convert it to IndexedRowMatrix.
+      val QRow = new RowMatrix(AB, numRows().toInt, R.cols)
+      val indexedRows = A.rows.map(_.index).
+        zip(QRow.rows).map { case (i, v) => IndexedRow(i, v) }
+      new IndexedRowMatrix(indexedRows, numRows().toInt, R.cols)
+    }
+
+    // Orthonormalize the columns of the input BlockMatrix.
+    val Q = if (isQR) {
+      // Convert to RowMatrix and apply tallSkinnyQR.
+      val indices = toIndexedRowMatrix().rows.map(_.index)
+      val qrResult = toIndexedRowMatrix().toRowMatrix().tallSkinnyQR(true)
+      // Convert Q to IndexedRowMatrix
+      val indexedRows = indices.zip(qrResult.Q.rows).map { case (i, v) =>
+        IndexedRow(i, v)}
+      new IndexedRowMatrix(indexedRows, numRows().toInt, numCols().toInt)
+    } else {
+      /*
+      println("Matrix need to be orthogonal")
+      for (i <- 0 until numRows().toInt) {
+        val lala = toBreeze()
+        println(lala(i, ::).t.toArray.mkString(" "))
+      }
+
+      println("Singular Values")
+      val brzSvd.SVD(_, s, _) = brzSvd.reduced.apply(this.toBreeze())
+      println(s)
+      */
+      val GramQR = toIndexedRowMatrix().toRowMatrix().tallSkinnyQR(true).Q.computeGramianMatrix()
+      // val Q = iterativeRefinemet(iterativeRefinemet(this)).toIndexedRowMatrix()
+      val Q = iterativeRefinemet(this).toIndexedRowMatrix()
+      /*
+      println("Gram Matrix sum of diagonal entries using tallSkinnyQR")
+      println(trace(GramQR.asBreeze.toDenseMatrix))
+      println("Gram Matrix sum of diagonal entries")
+      println(trace(Q.computeGramianMatrix().asBreeze.toDenseMatrix))
+
+      println("Gram Matrix sum of non-diagonal entries using tallSkinnyQR")
+      println(sum(GramQR.asBreeze.toDenseMatrix) -
+        trace(GramQR.asBreeze.toDenseMatrix))
+      println("Gram Matrix sum of non-diagonal entries")
+      println(sum(Q.computeGramianMatrix().asBreeze.toDenseMatrix) -
+        trace(Q.computeGramianMatrix().asBreeze.toDenseMatrix))
+      */
+      // Convert Q to IndexedRowMatrix
+      val indices = Q.rows.map(_.index)
+      val indexedRows = indices.zip(Q.toRowMatrix().rows).map { case (i, v) =>
+        IndexedRow(i, v)}
+      new IndexedRowMatrix(indexedRows, numRows().toInt, numCols().toInt)
+
+      /*
+      // Compute the Gram matrix of A
+      val gramMat = toIndexedRowMatrix().toRowMatrix().computeGramianMatrix()
+      val CholeskyRegularization = 1.0e-8 * Vectors.norm(
+        Vectors.dense(gramMat.toArray), 2.0)
+      // Add some small values to the diagonal of Gram matrix such
+      // that it is strictly positive-definite.
+      val B = gramMat.asBreeze.toDenseMatrix + CholeskyRegularization *
+        BDM.eye[Double](gramMat.numCols)
+      // Cholesky decomposition
+      val R = cholesky((B + B.t) * .5)
+      // Forward solve
+      forwardSolve(toIndexedRowMatrix(), R)
+      */
+    }
+    // Convert Q to BlockMatrix.
+    if (isTranspose) {
+      Q.toBlockMatrix(colsPerBlock, rowsPerBlock)
+    } else {
+      Q.toBlockMatrix(rowsPerBlock, colsPerBlock)
+    }
+  }
+
+  /**
+    * Estimate the largest singular value of [[BlockMatrix]] A using
+    * power method.
+    *
+    * @param iteration number of iterations for power method.
+    * @param sc a [[SparkContext]] generates the normalized
+    *           vector in each iteration.
+    * @return a [[Double]] estimate of the largest singular value.
+    */
+  @Since("2.0.0")
+  def spectralNormEst(iteration: Int = 20, sc: SparkContext): Double = {
+    /**
+      * Normalize the [[BlockMatrix]] v which has one column such that it has
+      * unit norm.
+      *
+      * @param v the [[BlockMatrix]] which has one column.
+      * @param sc SparkContext, use to generate the normalized [[BlockMatrix]].
+      * @param isTranspose determines whether to partition v commensurate with
+      *                    multiplication by A or with A'.
+      * @return a [[BlockMatrix]] such that it has unit norm.
+      */
+    def unit(v : BlockMatrix, sc: SparkContext, isTranspose: Boolean = false):
+    BlockMatrix = {
+      // v = v / norm(v).
+      val temp = Vectors.dense(v.toBreeze().toArray)
+      val vUnit = temp.asBreeze * (1.0 / Vectors.norm(temp, 2))
+      // Convert v back to BlockMatrix.
+      val indexedRow = Seq.tabulate(v.numRows().toInt)(n => (n.toLong,
+        Vectors.dense(vUnit(n)))).map(x => IndexedRow(x._1, x._2))
+      val data = new IndexedRowMatrix(sc.parallelize(indexedRow))
+      // isTranspose determines whether to partition v commensurate with
+      // multiplication by A or with A'. We will perform matrix multiplication
+      // with A or A', i.e., A * v or A' * v. We want the number of rows in
+      // each block of v to be same as the number of columns in each block A.
+      if (isTranspose) {
+        data.toBlockMatrix(colsPerBlock, 1)
+      } else {
+        data.toBlockMatrix(rowsPerBlock, 1)
+      }
+    }
+    // Generate a random vector v.
+    var v = {
+      val data = Seq.tabulate(numCols().toInt)(n =>
+        (n.toLong, Vectors.fromBreeze(BDV.rand(1))))
+        .map(x => IndexedRow(x._1, x._2))
+      val indexedRows: RDD[IndexedRow] = sc.parallelize(data,
+        createPartitioner().numPartitions)
+      // v has colsPerBlock for the number of rows in each block, and 1
+      // as the number of columns in each block. We will
+      // perform matrix multiplication with A, i.e., A * v. We want the number
+      // of rows in each block of v to be same as the number of columns in
+      // each block A.
+      new IndexedRowMatrix(indexedRows).toBlockMatrix(colsPerBlock, 1)
+    }
+    // Find the largest singular value of A using power method.
+    for (i <- 0 until iteration) {
+      // normalize v.
+      v = unit(v, sc, isTranspose = true)
+      // v = A * v.
+      val Av = multiply(v)
+      // normalize v.
+      v = unit(Av, sc, isTranspose = false)
+      // v = A' * v.
+      v = transpose.multiply(v)
+    }
+    // Calculate the 2-norm of final v.
+    Vectors.norm(Vectors.dense(v.toBreeze().toArray), 2)
   }
 }
