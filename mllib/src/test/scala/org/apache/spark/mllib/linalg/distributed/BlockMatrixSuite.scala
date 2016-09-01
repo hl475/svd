@@ -404,11 +404,11 @@ class BlockMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
     val localMat = gridBasedMatLowRank.toBreeze()
     val n = gridBasedMatLowRank.numCols().toInt
     for (k <- Seq(n, n - 1)) {
-      for (isQR <- Seq(true, false)) {
+      for (isGram <- Seq(true, false)) {
         for (isRandom <- Seq(true, false)) {
           val iteration = 2
           val svdResult = gridBasedMatLowRank.partialSVD(k, sc,
-            computeU = true, isQR, iteration, isRandom)
+            computeU = true, isGram, iteration, isRandom)
           val U = svdResult.U
           val S = svdResult.s
           val V = svdResult.V
@@ -417,10 +417,10 @@ class BlockMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
             asInstanceOf[BDM[Double]]
           val diff = localMat - reconstruct
           val brzSvd.SVD(_, diffNorm, _) = brzSvd.reduced.apply(diff)
-          val tol = if (isQR) 5.0e-13 else 5.0e-6
+          val tol = if (isGram) 5.0e-13 else 5.0e-6
           assert(diffNorm(0) ~== 0.0 absTol tol)
           val svdWithoutU = gridBasedMat.partialSVD(k, sc,
-            computeU = false, isQR, iteration, isRandom)
+            computeU = false, isGram, iteration, isRandom)
           assert(svdWithoutU.U === null)
         }
       }
