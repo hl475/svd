@@ -23,18 +23,18 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val numCols = Seq(300, 100, 500)
     val k = Seq(25, 20, 50)
     val caseNumS = Seq(1, 5, 9)
-    val isQR = Seq(true, false, false)
+    val isGram = Seq(false, false, false)
     val computeU = true
     val iterPower = 1
     val iterSpectralNorm = 20
     val isRandom = true
-    for (i <- 0 to 2) {
+    for (i <- 0 to 0) {
       println("--------------------------------" +
         "--------------------------------")
       println("Setting: m = " + numRows(i) + ", n = " + numCols(i) +
         ", k = " + k(i))
       println("Setting: caseNumS = " + caseNumS(i))
-      println("Setting: isQR = " + isQR(i))
+      println("Setting: isGram = " + isGram(i))
       println("--------------------------------")
       println("Generate BlockMatrix")
       val A = generateMatrix(numRows(i),
@@ -42,7 +42,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Done")
       // test partialSVD
       println("Test partialSVD")
-      val ratio1 = partialSVDSuite(A, k(i), sc, computeU, isQR(i),
+      val ratio1 = partialSVDSuite(A, k(i), sc, computeU, isGram(i),
         iterPower, iterSpectralNorm, isRandom)
       println("Test partialSVD done")
 
@@ -54,7 +54,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Result: ratio of spectral norm between diff and input")
       println("partialSVD:    " + ratio1)
       println("tallSkinnySVD: " + ratio2)
-      if (isQR(i)) {
+      if (isGram(i)) {
         assert(ratio1 ~== 0.0 absTol 1E-13)
       } else {
         assert(ratio1 ~== 0.0 absTol 1E-6)
@@ -68,10 +68,10 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   }
 
   def partialSVDSuite(A: BlockMatrix, k: Int, sc: SparkContext, computeU: Boolean,
-                      isQR: Boolean, iter1: Int, iter2: Int,
+                      isGram: Boolean, iter1: Int, iter2: Int,
                       isRandom: Boolean): Double = {
     println("Compute partialSVD")
-    val svdResult = time {A.partialSVD(k, sc, computeU, isQR, iter1, isRandom)}
+    val svdResult = time {A.partialSVD(k, sc, computeU, isGram, iter1, isRandom)}
     println("Done")
 
     val U = svdResult.U.toIndexedRowMatrix()
