@@ -417,7 +417,7 @@ class BlockMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
             asInstanceOf[BDM[Double]]
           val diff = localMat - reconstruct
           val brzSvd.SVD(_, diffNorm, _) = brzSvd.reduced.apply(diff)
-          val tol = if (isGram) 5.0e-13 else 5.0e-6
+          val tol = if (isGram) 5.0e-6 else 5.0e-13
           assert(diffNorm(0) ~== 0.0 absTol tol)
           val svdWithoutU = gridBasedMat.partialSVD(k, sc,
             computeU = false, isGram, iteration, isRandom)

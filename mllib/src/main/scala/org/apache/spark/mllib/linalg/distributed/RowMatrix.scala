@@ -481,16 +481,21 @@ class RowMatrix @Since("1.0.0") (
     * [[RowMatrix]] of a tall and skinny shape. We multiply the matrix being
     * processed by a random orthogonal matrix in order to mix the columns,
     * obviating the need for pivoting.
+    *
     * References:
-    *   Benson, Austin R., David F. Gleich, and James Demmel. "Direct QR
-    *   factorizations for tall-and-skinny matrices in MapReduce
-    *   architectures."    ([[http://arxiv.org/abs/1301.1071]])
     *   Parker, Douglass Stott, and Brad Pierce. The randomizing FFT: an
     *   alternative to pivoting in Gaussian elimination. University of
     *   California (Los Angeles). Computer Science Department, 1995.
     *   Le, Dinh, and D. Stott Parker. "Using randomization to make recursive
     *   matrix algorithms practical." Journal of Functional Programming
     *   9.06 (1999): 605-624.
+    *   Benson, Austin R., David F. Gleich, and James Demmel. "Direct QR
+    *   factorizations for tall-and-skinny matrices in MapReduce architectures."
+    *   Big Data, 2013 IEEE International Conference on. IEEE, 2013.
+    *   Mary, Théo, et al. "Performance of random sampling for computing
+    *   low-rank approximations of a dense matrix on GPUs." Proceedings of the
+    *   International Conference for High Performance Computing, Networking,
+    *   Storage and Analysis. ACM, 2015.
     *
     * @param sc SparkContext used in an intermediate step which converts an
     *           upper triangular matrix to RDD[Vector].
@@ -509,13 +514,13 @@ class RowMatrix @Since("1.0.0") (
   SingularValueDecomposition[RowMatrix, Matrix] = {
 
     /**
-      * Convert [[Matrix]] to [[RDD[Vector]]]
+      * Convert [[Matrix]] to [[RDD[Vector]]].
       * @param mat an [[Matrix]].
       * @param sc SparkContext used to create RDDs.
       * @return RDD[Vector].
       */
     def toRDD(mat: Matrix, sc: SparkContext): RDD[Vector] = {
-      // Convert mat to Sequence of DenseVector
+      // Convert mat to Sequence of DenseVector.
       val columns = mat.toArray.grouped(mat.numRows)
       val rows = columns.toSeq.transpose
       val vectors = rows.map(row => new DenseVector(row.toArray))
@@ -535,7 +540,7 @@ class RowMatrix @Since("1.0.0") (
     // Apply tallSkinnyQR to B in order to produce the factorization B = Q*R.
     val qrResult = aq.tallSkinnyQR(computeQ = true)
 
-    // convert R to RowMatrix
+    // Convert R to RowMatrix.
     val RrowMat = new RowMatrix(toRDD(qrResult.R, sc))
 
     // Convert RrowMat back by reverse shuffle, inverse fourier transform,
@@ -843,7 +848,7 @@ class RowMatrix @Since("1.0.0") (
       * and R is upper-triangular. If the (i,i)th entry of R is close to 0, then
       * we set the ith column of Q to 0, as well.
       *
-      * @param R upper-triangular matrix
+      * @param R upper-triangular matrix.
       * @return Q [[RowMatrix]] such that Q*R = A.
       */
     def forwardSolve(R: breeze.linalg.DenseMatrix[Double]):
