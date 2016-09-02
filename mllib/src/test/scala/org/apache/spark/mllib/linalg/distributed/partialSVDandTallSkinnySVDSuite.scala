@@ -23,12 +23,12 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val numCols = Seq(300, 100, 500)
     val k = Seq(25, 20, 50)
     val caseNumS = Seq(1, 5, 9)
-    val isGram = Seq(false, false, false)
+    val isGram = Seq(true, false, true)
     val computeU = true
     val iterPower = 1
     val iterSpectralNorm = 20
     val isRandom = true
-    for (i <- 0 to 0) {
+    for (i <- 0 to 2) {
       println("--------------------------------" +
         "--------------------------------")
       println("Setting: m = " + numRows(i) + ", n = " + numCols(i) +
@@ -55,9 +55,9 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("partialSVD:    " + ratio1)
       println("tallSkinnySVD: " + ratio2)
       if (isGram(i)) {
-        assert(ratio1 ~== 0.0 absTol 1E-13)
-      } else {
         assert(ratio1 ~== 0.0 absTol 1E-6)
+      } else {
+        assert(ratio1 ~== 0.0 absTol 1E-13)
       }
       assert(ratio2 ~== 0 absTol 1E-13)
       println("Test passed")
