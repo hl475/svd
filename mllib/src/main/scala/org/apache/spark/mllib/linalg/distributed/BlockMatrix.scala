@@ -522,10 +522,14 @@ class BlockMatrix @Since("1.3.0") (
     *          if there are numerically zero singular values.
     * @param sc SparkContext, use to generate the random gaussian matrix.
     * @param computeU whether to compute U.
-    * @param isGram whether to compute the Gram matrix for matrix orthonormalization.
+    * @param isGram whether to compute the Gram matrix for matrix
+    *               orthonormalization.
     * @param iteration number of normalized power iterations to conduct.
     * @param isRandom whether or not fix seed to generate random matrix.
     * @return SingularValueDecomposition(U, s, V).
+    *
+    * @note if isGram is true, it will lose half or more of the precision
+    * of the arithmetic but could accelerate the computation.
     */
   @Since("2.0.0")
   def partialSVD(k: Int, sc: SparkContext, computeU: Boolean = false,
@@ -545,7 +549,7 @@ class BlockMatrix @Since("1.3.0") (
       *       number of rows in each block, and rowsPerBlock for the number
       *       of columns in each block. We will perform matrix multiplication
       *       with A, i.e., A * V. We want the number of rows in each block
-      *       of V to be same as the number of columns in each block A.
+      *       of V to be same as the number of columns in each block of A.
       */
     def generateRandomMatrices(k: Int, sc: SparkContext): BlockMatrix = {
       val limit = 65535
@@ -583,9 +587,9 @@ class BlockMatrix @Since("1.3.0") (
       * @param Q a [[BlockMatrix]] with orthonormal columns.
       * @param k number of singular values to compute.
       * @param computeU whether to compute U.
-      * @param isGram whether to compute the Gram matrix for matrix orthonormalization.
-      * @return SingularValueDecomposition[U, s, V], U = null
-      *         if computeU = false.
+      * @param isGram whether to compute the Gram matrix for matrix
+      *               orthonormalization.
+      * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
       *
       * @note if isGram is true, it will lose half or more of the precision
       * of the arithmetic but could accelerate the computation.
@@ -599,7 +603,7 @@ class BlockMatrix @Since("1.3.0") (
       // Find SVD of B such that B = V * S * X'.
       val (svdResult, indices) = if (isGram) {
         // Orthonormalize B (now known as Y).
-        val Y = B.orthonormal(isGram = false)
+        val Y = B.orthonormal(isGram = true).orthonormal(isGram = true)
         // Compute R = (B' * Y)'.
         val R = B.transpose.multiply(Y).transpose
         // Compute svd of R such that R = W * S * X'.
@@ -682,18 +686,17 @@ class BlockMatrix @Since("1.3.0") (
   BlockMatrix = {
 
     /**
-      * Orthonormalize the columns of the [[BlockMatrix]] B by: computing the
+      * Orthonormalize the columns of the [[IndexedRowMatrix]] B by: computing the
       * Gram matrix G of B, applying the eigenvalue decomposition on G such
       * that G = U * D * U', computing Q = B * U, and normalizing each column
       * of Q.
       *
-      * @param B the input [[BlockMatrix]].
-      * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
+      * @param B the input [[IndexedRowMatrix]].
+      * @return a [[IndexedRowMatrix]] whose columns are orthonormal vectors.
       */
-    def orthonormalViaGram(B: BlockMatrix): BlockMatrix = {
+    def orthonormalViaGram(B: IndexedRowMatrix): IndexedRowMatrix = {
       // Compute Gram matrix G of B such that G = B' * B.
-      val G = B.toIndexedRowMatrix().toRowMatrix().
-        computeGramianMatrix().asBreeze.toDenseMatrix
+      val G = B.toRowMatrix().computeGramianMatrix().asBreeze.toDenseMatrix
       // Compute the eigenvalue decomposition of G
       // such that G = U * D * U'.
       val EigSym(eigenValues, eigenVectors) = eigSym(G)
@@ -711,17 +714,16 @@ class BlockMatrix @Since("1.3.0") (
         eigenRank by -1)
       val U = Matrices.dense(EigenVectors.rows, EigenVectors.cols,
         eigenVectors(::, eigenVectors.cols - 1 to eigenRank by -1).toArray)
-      val Q = B.toIndexedRowMatrix().multiply(U)
+      val Q = B.multiply(U)
       val normQ = Vectors.fromBreeze(1.0 / Statistics.colStats(
         Q.toRowMatrix().rows).normL2.asBreeze.toDenseVector)
-      Q.multiply(Matrices.diag(normQ)).toBlockMatrix(
-        B.rowsPerBlock, B.colsPerBlock)
+      Q.multiply(Matrices.diag(normQ))
     }
 
     // Orthonormalize the columns of the input BlockMatrix.
     val Q = if (isGram) {
       // Orthonormalize via computing the Gram matrix.
-      val Q = orthonormalViaGram(this).toIndexedRowMatrix()
+      val Q = orthonormalViaGram(toIndexedRowMatrix())
       // Convert Q to IndexedRowMatrix.
       val indices = Q.rows.map(_.index)
       val indexedRows = indices.zip(Q.toRowMatrix().rows).map { case (i, v) =>
