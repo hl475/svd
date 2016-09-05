@@ -24,8 +24,6 @@ import breeze.linalg.{eigSym, svd => brzSvd, DenseMatrix => BDM,
   DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV}
 import breeze.linalg.eigSym.EigSym
 import breeze.numerics.ceil
-import com.github.fommil.netlib.LAPACK.{getInstance => lapack}
-import org.netlib.util.intW
 
 import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
@@ -594,18 +592,30 @@ class BlockMatrix @Since("1.3.0") (
       * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
       *
       * @note if isGram is true, it will lose half or more of the precision
-      * of the arithmetic but could accelerate the computation.
+      * of the arithmetic but could accelerate the computation. It will
+      * orthonormalize twice to makes the columns of the matrix be orthonormal
+      * to 15 digits.
       */
     def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean,
                  isGram: Boolean, sc: SparkContext):
     SingularValueDecomposition[BlockMatrix, Matrix] = {
-      // Compute B = A' * Q.
-      val B = transpose.multiply(Q)
+      // Orthonormalize Q (now known as Q1) so the columns of left singular
+      // vectors of A will be orthonormal to 15 digits.
+      val Q1 = Q.orthonormal(isGram = true)
+      // Compute B = A' * Q1.
+      val B = transpose.multiply(Q1)
 
       // Find SVD of B such that B = V * S * X'.
       val (svdResult, indices) = if (isGram) {
-        // Orthonormalize B (now known as Y).
-        val Y = B.orthonormal(isGram = true).orthonormal(isGram = true)
+        // Orthonormalize B (now known as Y) twice so the columns of right
+        // singular vectors will be orthonormal to 15 digits. Orthonormalizing
+        // twice makes the columns of the matrix be orthonormal to nearly the
+        // machine precision, but they still will span the original column space
+        // only to the square root of the machine precision (having come from
+        // the Gram matrix). Later parts of the code assume that the columns
+        // are numerically orthonormal in order to simplify the computations.
+        val Y = B.orthonormal(isGram).orthonormal(isGram)
+
         // Compute R = (B' * Y)'.
         val R = B.transpose.multiply(Y).transpose
         // Compute svd of R such that R = W * S * X'.
@@ -618,7 +628,8 @@ class BlockMatrix @Since("1.3.0") (
           multiply(WMat), sk, XMat), Y.toIndexedRowMatrix().rows.map(_.index))
       } else {
         (B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc, k,
-          computeU = true, rCond = 1.0e-15), B.toIndexedRowMatrix().rows.map(_.index))
+          computeU = true, rCond = 1.0e-15), B.toIndexedRowMatrix().
+          rows.map(_.index))
       }
 
       // Convert V's type.
@@ -632,7 +643,7 @@ class BlockMatrix @Since("1.3.0") (
       if (computeU) {
         // U = Q * X.
         val XMat = svdResult.V
-        val U = Q.toIndexedRowMatrix().multiply(XMat).toBlockMatrix()
+        val U = Q1.toIndexedRowMatrix().multiply(XMat).toBlockMatrix()
         SingularValueDecomposition(U, svdResult.s, V)
       } else {
         SingularValueDecomposition(null, svdResult.s, V)
@@ -648,19 +659,19 @@ class BlockMatrix @Since("1.3.0") (
     // V = A * V, with the V on the left now known as x.
     val x = multiply(V)
     // Orthonormalize V (now known as x).
-    var y = x.orthonormal(isGram, isTranspose = true)
+    var y = x.orthonormal(isGram)
 
     for (i <- 0 until iteration) {
       // V = A' * V,  with the V on the left now known as a, and the V on
       // the right known as y.
       val a = transpose.multiply(y)
       // Orthonormalize V (now known as a).
-      val b = a.orthonormal(isGram, isTranspose = false)
+      val b = a.orthonormal(isGram)
       // V = A * V, with the V on the left now known as c, and the V on
       // the right known as b.
       val c = multiply(b)
       // Orthonormalize V (now known as c).
-      y = c.orthonormal(isGram, isTranspose = true)
+      y = c.orthonormal(isGram)
     }
 
     // Find SVD of A using V (now known as y).
@@ -677,28 +688,18 @@ class BlockMatrix @Since("1.3.0") (
     *
     * @param isGram whether to compute the Gram matrix for matrix
     *               orthonormalization.
-    * @param isTranspose whether to switch colsPerBlock and rowsPerBlock.
     * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
     *
     * @note if isGram is true, it will lose half or more of the precision
     * of the arithmetic but could accelerate the computation.
     */
   @Since("2.0.0")
-  def orthonormal(isGram: Boolean = true, isTranspose: Boolean = false):
-  BlockMatrix = {
-
-    /**
-      * Orthonormalize the columns of the [[IndexedRowMatrix]] B by: computing the
-      * Gram matrix G of B, applying the eigenvalue decomposition on G such
-      * that G = U * D * U', computing Q = B * U, and normalizing each column
-      * of Q.
-      *
-      * @param B the input [[IndexedRowMatrix]].
-      * @return a [[IndexedRowMatrix]] whose columns are orthonormal vectors.
-      */
-    def orthonormalViaGram(B: IndexedRowMatrix): IndexedRowMatrix = {
+  def orthonormal(isGram: Boolean = true): BlockMatrix = {
+    // Orthonormalize the columns of the input BlockMatrix.
+    if (isGram) {
       // Compute Gram matrix G of B such that G = B' * B.
-      val G = B.toRowMatrix().computeGramianMatrix().asBreeze.toDenseMatrix
+      val G = toIndexedRowMatrix().toRowMatrix().
+        computeGramianMatrix().asBreeze.toDenseMatrix
       // Compute the eigenvalue decomposition of G
       // such that G = U * D * U'.
       val EigSym(eigenValues, eigenVectors) = eigSym(G)
@@ -709,28 +710,16 @@ class BlockMatrix @Since("1.3.0") (
           eigenValues(eigenValues.length - 1)) i = i - 1
         i + 1
       }
-      
       // Calculate Q such that Q = B * U and normalize Q such that each column
       // of Q has norm 1.
       val EigenVectors = eigenVectors(::, eigenVectors.cols - 1 to
         eigenRank by -1)
       val U = Matrices.dense(EigenVectors.rows, EigenVectors.cols,
         eigenVectors(::, eigenVectors.cols - 1 to eigenRank by -1).toArray)
-      val Q = B.multiply(U)
+      val Q = toIndexedRowMatrix().multiply(U)
       val normQ = Vectors.fromBreeze(1.0 / Statistics.colStats(
         Q.toRowMatrix().rows).normL2.asBreeze.toDenseVector)
-      Q.multiply(Matrices.diag(normQ))
-    }
-
-    // Orthonormalize the columns of the input BlockMatrix.
-    val Q = if (isGram) {
-      // Orthonormalize via computing the Gram matrix.
-      val Q = orthonormalViaGram(toIndexedRowMatrix())
-      // Convert Q to IndexedRowMatrix.
-      val indices = Q.rows.map(_.index)
-      val indexedRows = indices.zip(Q.toRowMatrix().rows).map { case (i, v) =>
-        IndexedRow(i, v)}
-      new IndexedRowMatrix(indexedRows, numRows().toInt, numCols().toInt)
+      Q.multiply(Matrices.diag(normQ)).toBlockMatrix(rowsPerBlock, colsPerBlock)
     } else {
       // Convert to RowMatrix and apply tallSkinnyQR.
       val indices = toIndexedRowMatrix().rows.map(_.index)
@@ -738,14 +727,8 @@ class BlockMatrix @Since("1.3.0") (
       // Convert Q to IndexedRowMatrix.
       val indexedRows = indices.zip(qrResult.Q.rows).map { case (i, v) =>
         IndexedRow(i, v)}
-      new IndexedRowMatrix(indexedRows, numRows().toInt, numCols().toInt)
-    }
-
-    // Convert Q to BlockMatrix.
-    if (isTranspose) {
-      Q.toBlockMatrix(colsPerBlock, rowsPerBlock)
-    } else {
-      Q.toBlockMatrix(rowsPerBlock, colsPerBlock)
+      new IndexedRowMatrix(indexedRows, numRows().toInt, numCols().toInt).
+        toBlockMatrix(rowsPerBlock, colsPerBlock)
     }
   }
 
@@ -766,28 +749,17 @@ class BlockMatrix @Since("1.3.0") (
       *
       * @param v the [[BlockMatrix]] which has one column.
       * @param sc SparkContext, use to generate the normalized [[BlockMatrix]].
-      * @param isTranspose determines whether to partition v commensurate with
-      *                    multiplication by A or with A'.
       * @return a [[BlockMatrix]] such that it has unit norm.
       */
-    def unit(v : BlockMatrix, sc: SparkContext, isTranspose: Boolean = false):
-    BlockMatrix = {
+    def unit(v : BlockMatrix, sc: SparkContext): BlockMatrix = {
       // v = v / norm(v).
       val temp = Vectors.dense(v.toBreeze().toArray)
       val vUnit = temp.asBreeze * (1.0 / Vectors.norm(temp, 2))
       // Convert v back to BlockMatrix.
       val indexedRow = Seq.tabulate(v.numRows().toInt)(n => (n.toLong,
         Vectors.dense(vUnit(n)))).map(x => IndexedRow(x._1, x._2))
-      val data = new IndexedRowMatrix(sc.parallelize(indexedRow))
-      // isTranspose determines whether to partition v commensurate with
-      // multiplication by A or with A'. We will perform matrix multiplication
-      // with A or A', i.e., A * v or A' * v. We want the number of rows in
-      // each block of v to be same as the number of columns in each block A.
-      if (isTranspose) {
-        data.toBlockMatrix(colsPerBlock, 1)
-      } else {
-        data.toBlockMatrix(rowsPerBlock, 1)
-      }
+      new IndexedRowMatrix(sc.parallelize(indexedRow)).
+        toBlockMatrix(v.rowsPerBlock, v.colsPerBlock)
     }
 
     // Generate a random vector v.
@@ -808,11 +780,11 @@ class BlockMatrix @Since("1.3.0") (
     // Find the largest singular value of A using power method.
     for (i <- 0 until iteration) {
       // normalize v.
-      v = unit(v, sc, isTranspose = true)
+      v = unit(v, sc)
       // v = A * v.
       val Av = multiply(v)
       // normalize v.
-      v = unit(Av, sc, isTranspose = false)
+      v = unit(Av, sc)
       // v = A' * v.
       v = transpose.multiply(v)
     }
