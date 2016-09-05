@@ -4,8 +4,8 @@
 
 package org.apache.spark.mllib.linalg.distributed
 
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV}
-
+import breeze.linalg.{max, DenseMatrix => BDM, DenseVector => BDV}
+import breeze.numerics.abs
 import org.apache.spark.{SparkContext, SparkFunSuite}
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.util.MLlibTestSparkContext
@@ -83,20 +83,15 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val SVTMat = Matrices.dense(numk, A.numCols().toInt, SVT)
     val USVT = U.multiply(SVTMat)
     val diff = A.subtract(USVT.toBlockMatrix(rowPerPart, colPerPart))
-    /*
-    println("Gram Matrix of final U")
+
+    println("Max value of non-diagonal entries of left sigular vectors")
     val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
-    for (i <- 0 until gramU.rows) {
-      val lala = gramU(i, ::).t
-      println(lala.toArray.mkString(" "))
-    }
-    println("Gram Matrix of final V")
-    val gramV = V.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
-    for (i <- 0 until gramV.rows) {
-      val lala = gramV(i, ::).t
-      println(lala.toArray.mkString(" "))
-    }
-    */
+    println(max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector)))
+
+    println("Max value of non-diagonal entries of right sigular vectors")
+    val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
+    println(max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector)))
+
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter2, sc)}
     println("Done")
@@ -127,6 +122,15 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       IndexedRow(i, v)}
     val USVTIndexedRowMat = new IndexedRowMatrix(indexedRows)
     val diff = A.subtract(USVTIndexedRowMat.toBlockMatrix(rowPerPart, colPerPart))
+
+    println("Max value of non-diagonal entries of left sigular vectors")
+    val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
+    println(max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector)))
+
+    println("Max value of non-diagonal entries of right sigular vectors")
+    val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
+    println(max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector)))
+
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter, sc)}
     println("Done")
