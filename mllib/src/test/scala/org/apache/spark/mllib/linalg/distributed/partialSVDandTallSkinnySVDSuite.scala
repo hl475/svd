@@ -6,6 +6,7 @@ package org.apache.spark.mllib.linalg.distributed
 
 import breeze.linalg.{max, DenseMatrix => BDM, DenseVector => BDV}
 import breeze.numerics.abs
+
 import org.apache.spark.{SparkContext, SparkFunSuite}
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.util.MLlibTestSparkContext
@@ -45,7 +46,6 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       val ratio1 = partialSVDSuite(A, k(i), sc, computeU, isGram(i),
         iterPower, iterSpectralNorm, isRandom)
       println("Test partialSVD done")
-
       // test tallSkinnySVD
       println("Test tallSkinnySVD")
       val ratio2 = tallSkinnySVDSuite(A, k(i), computeU, iterSpectralNorm)

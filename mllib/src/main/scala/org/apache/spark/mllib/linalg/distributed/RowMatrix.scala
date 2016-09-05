@@ -534,11 +534,15 @@ class RowMatrix @Since("1.0.0") (
     val (aq, randUnit, randIndex) = multiplyDFS(iteration,
       isForward = true, null, null)
 
-    // Apply tallSkinnyQR to B in order to produce the factorization B = Q*R.
-    val qrResult = aq.tallSkinnyQR(computeQ = true)
+    // Apply tallSkinnyQR twice to B in order to produce the factorization
+    // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q2 * R.
+    val qrResult1 = aq.tallSkinnyQR(computeQ = true)
+    val qrResult2 = qrResult1.Q.tallSkinnyQR(computeQ = true)
 
     // Convert R to RowMatrix.
-    val RrowMat = new RowMatrix(toRDD(qrResult.R, sc))
+    val R = qrResult2.R.asBreeze.toDenseMatrix *
+      qrResult1.R.asBreeze.toDenseMatrix
+    val RrowMat = new RowMatrix(toRDD(Matrices.fromBreeze(R), sc))
 
     // Convert RrowMat back by reverse shuffle, inverse fourier transform,
     // and dividing random matrix, i.e. R * Q^T = R * S^{-1} * F^{-1} * D^{-1}.
@@ -558,10 +562,10 @@ class RowMatrix @Since("1.0.0") (
       0 until numCols().toInt).toArray).transpose
     if (computeU) {
       // Truncate W.
-      val WMat = Matrices.dense(qrResult.R.numRows, rank,
-        Arrays.copyOfRange(w.toArray, 0, qrResult.R.numRows * rank))
-      // U = Q * W.
-      val U = qrResult.Q.multiply(WMat)
+      val WMat = Matrices.dense(R.rows, rank,
+        Arrays.copyOfRange(w.toArray, 0, R.rows * rank))
+      // U = Q2 * W.
+      val U = qrResult2.Q.multiply(WMat)
       SingularValueDecomposition(U, sk, VMat)
     } else {
       SingularValueDecomposition(null, sk, VMat)
