@@ -22,8 +22,8 @@ import java.util.Arrays
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
-import breeze.linalg.{axpy => brzAxpy, shuffle, svd => brzSvd, DenseMatrix => BDM, DenseVector => BDV,
-  MatrixSingularException, SparseVector => BSV}
+import breeze.linalg.{axpy => brzAxpy, shuffle, svd => brzSvd, DenseMatrix => BDM,
+  DenseVector => BDV, MatrixSingularException, SparseVector => BSV}
 import breeze.math.{i, Complex}
 import breeze.numerics.{sqrt => brzSqrt}
 import breeze.signal.{fourierTr, iFourierTr}
