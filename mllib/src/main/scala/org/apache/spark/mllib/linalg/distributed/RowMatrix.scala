@@ -538,7 +538,10 @@ class RowMatrix @Since("1.0.0") (
       isForward = true, null, null)
 
     // Apply tallSkinnyQR twice to B in order to produce the factorization
-    // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q2 * R.
+    // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q2 * R. Orthonormalizing
+    // twice makes the columns of the matrix be orthonormal to nearly the machine
+    // precision. Later parts of the code assume that the columns are numerically
+    // orthonormal in order to simplify the computations.
     val qrResult1 = aq.tallSkinnyQR(computeQ = true)
     val qrResult2 = qrResult1.Q.tallSkinnyQR(computeQ = true)
 

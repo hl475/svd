@@ -627,9 +627,9 @@ class BlockMatrix @Since("1.3.0") (
         (SingularValueDecomposition(Y.toIndexedRowMatrix().toRowMatrix().
           multiply(WMat), sk, XMat), Y.toIndexedRowMatrix().rows.map(_.index))
       } else {
-        (B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc, k,
-          computeU = true, rCond = 1.0e-15), B.toIndexedRowMatrix().
-          rows.map(_.index))
+        (B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc,
+          Math.min(k, B.nCols.toInt), computeU = true, rCond = 1.0e-15),
+          B.toIndexedRowMatrix().rows.map(_.index))
       }
 
       // Convert V's type.
