@@ -325,7 +325,7 @@ class RowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
   test("tallSkinnySVD of a low-rank matrix") {
     val rows = sc.parallelize(Array.fill(4)(Vectors.dense(1.0, 1.0, 1.0)), 2)
     val mat = new RowMatrix(rows, 4, 3)
-    val svd = mat.tallSkinnySVD(sc, 2, computeU = true, 1e-6)
+    val svd = mat.tallSkinnySVD(sc, 2, computeU = true)
     assert(svd.s.size === 1, s"should not return zero singular values but got ${svd.s}")
     assert(svd.U.numRows() === 4)
     assert(svd.U.numCols() === 1)
