@@ -22,8 +22,10 @@ import java.util.Arrays
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
-import breeze.linalg.{axpy => brzAxpy, shuffle, svd => brzSvd, DenseMatrix => BDM,
-  DenseVector => BDV, MatrixSingularException, SparseVector => BSV}
+import breeze.linalg.{axpy => brzAxpy, eigSym, shuffle, svd => brzSvd,
+  DenseMatrix => BDM, DenseVector => BDV, MatrixSingularException,
+  SparseVector => BSV}
+import breeze.linalg.eigSym.EigSym
 import breeze.math.{i, Complex}
 import breeze.numerics.{sqrt => brzSqrt}
 import breeze.signal.{fourierTr, iFourierTr}
@@ -32,7 +34,8 @@ import org.apache.spark.SparkContext
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
-import org.apache.spark.mllib.stat.{MultivariateOnlineSummarizer, MultivariateStatisticalSummary}
+import org.apache.spark.mllib.stat.{MultivariateOnlineSummarizer,
+  MultivariateStatisticalSummary, Statistics}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.random.XORShiftRandom
@@ -510,13 +513,15 @@ class RowMatrix @Since("1.0.0") (
     */
   @Since("2.0.0")
   def tallSkinnySVD(sc: SparkContext, k: Int, computeU: Boolean = false,
+                    isGram: Boolean = true, ifTwice: Boolean = true,
                     rCond: Double = 1e-12, iteration: Int = 2):
   SingularValueDecomposition[RowMatrix, Matrix] = {
 
     /**
       * Convert [[Matrix]] to [[RDD[Vector]]].
+      *
       * @param mat an [[Matrix]].
-      * @param sc SparkContext used to create RDDs.
+      * @param sc  SparkContext used to create RDDs.
       * @return RDD[Vector].
       */
     def toRDD(mat: Matrix, sc: SparkContext): RDD[Vector] = {
@@ -530,35 +535,52 @@ class RowMatrix @Since("1.0.0") (
 
     require(k > 0 && k <= numCols().toInt,
       s"Requested k singular values but got k=$k and numCols=$numCols().toInt.")
-    // Convert the input RowMatrix A to another RowMatrix B by multiplying with
-    // a random matrix, discrete fourier transform, and random shuffle,
-    // i.e. A * Q = B where Q = D * F * S. Repeat several times, according to
-    // the number of iterations specified by iteration.
-    val (aq, randUnit, randIndex) = multiplyDFS(iteration,
-      isForward = true, null, null)
 
-    // Apply tallSkinnyQR twice to B in order to produce the factorization
-    // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q2 * R. Orthonormalizing
-    // twice makes the columns of the matrix be orthonormal to nearly the machine
-    // precision. Later parts of the code assume that the columns are numerically
-    // orthonormal in order to simplify the computations.
-    val qrResult1 = aq.tallSkinnyQR(computeQ = true)
-    val qrResult2 = qrResult1.Q.tallSkinnyQR(computeQ = true)
+    val (qMat, rMat) = if (isGram) {
+      val (qMat, rMat) = if (ifTwice) {
+        val (qMat1, rMat1) = orthonormal
+        val qMat2 = qMat1.orthonormal
+        (qMat2._1, qMat2._2 * rMat1)
+      } else {
+        orthonormal
+      }
+      (qMat, rMat)
+    } else {
+      // Convert the input RowMatrix A to another RowMatrix B by multiplying with
+      // a random matrix, discrete fourier transform, and random shuffle,
+      // i.e. A * Q = B where Q = D * F * S. Repeat several times, according to
+      // the number of iterations specified by iteration.
+      val (aq, randUnit, randIndex) = multiplyDFS(iteration,
+        isForward = true, null, null)
 
-    // Convert R to RowMatrix.
-    val R = qrResult2.R.asBreeze.toDenseMatrix *
-      qrResult1.R.asBreeze.toDenseMatrix
-    val RrowMat = new RowMatrix(toRDD(Matrices.fromBreeze(R), sc))
+      val (qMat, rMat) = if (ifTwice) {
+        // Apply tallSkinnyQR twice to B in order to produce the factorization
+        // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R. Orthonormalizing
+        // twice makes the columns of the matrix be orthonormal to nearly the machine
+        // precision. Later parts of the code assume that the columns are numerically
+        // orthonormal in order to simplify the computations.
+        val qrResult1 = aq.tallSkinnyQR(computeQ = true)
+        val qrResult2 = qrResult1.Q.tallSkinnyQR(computeQ = true)
+        (qrResult2.Q, qrResult2.R.asBreeze.toDenseMatrix *
+          qrResult1.R.asBreeze.toDenseMatrix)
+      } else {
+        // Apply tallSkinnyQR to B such that B = Q * R.
+        val qrResult = aq.tallSkinnyQR(computeQ = true)
+        (qrResult.Q, qrResult.R.asBreeze.toDenseMatrix)
+      }
+      // Convert R to RowMatrix.
+      val RrowMat = new RowMatrix(toRDD(Matrices.fromBreeze(rMat), sc))
 
-    // Convert RrowMat back by reverse shuffle, inverse fourier transform,
-    // and dividing random matrix, i.e. R * Q^T = R * S^{-1} * F^{-1} * D^{-1}.
-    // Repeat several times, according to the number of iterations specified
-    // by iteration.
-    val (rq, _, _) = RrowMat.multiplyDFS(iteration,
-      isForward = false, randUnit, randIndex)
-
+      // Convert RrowMat back by reverse shuffle, inverse fourier transform,
+      // and dividing random matrix, i.e. R * Q^T = R * S^{-1} * F^{-1} * D^{-1}.
+      // Repeat several times, according to the number of iterations specified
+      // by iteration.
+      val (rq, _, _) = RrowMat.multiplyDFS(iteration,
+        isForward = false, randUnit, randIndex)
+      (qMat, rq.toBreeze())
+    }
     // Apply SVD on R * Q^T.
-    val brzSvd.SVD(w, s, vt) = brzSvd.reduced.apply(rq.toBreeze())
+    val brzSvd.SVD(w, s, vt) = brzSvd.reduced.apply(rMat)
 
     // Determine the effective rank.
     val rank = determineRank(k, s, rCond)
@@ -568,14 +590,58 @@ class RowMatrix @Since("1.0.0") (
       0 until numCols().toInt).toArray).transpose
     if (computeU) {
       // Truncate W.
-      val WMat = Matrices.dense(R.rows, rank,
-        Arrays.copyOfRange(w.toArray, 0, R.rows * rank))
-      // U = Q2 * W.
-      val U = qrResult2.Q.multiply(WMat)
+      val WMat = Matrices.dense(rMat.rows, rank,
+        Arrays.copyOfRange(w.toArray, 0, rMat.rows * rank))
+      // U = Q * W.
+      val U = qMat.multiply(WMat)
       SingularValueDecomposition(U, sk, VMat)
     } else {
       SingularValueDecomposition(null, sk, VMat)
     }
+  }
+
+  /**
+    * Orthonormalize the columns of the [[RowMatrix]] A. We (1) compute
+    * the Gram matrix G = A' * A, (2) apply the eigenvalue decomposition
+    * on G = U * D * U', and compute Q = A * U and normalize each column
+    * of Q, (3) We also compute R such that A = Q * R.
+    *
+    * @return a [[RowMatrix]] Q whose columns are orthonormal vectors and
+    *         a [[DenseMatrix]] R such that A = Q * R.
+    *
+    * @note it will lose half or more of the precision of the arithmetic
+    *       but could accelerate the computation compared to tallSkinnyQR.
+    */
+  @Since("2.0.0")
+  def orthonormal: (RowMatrix, BDM[Double]) = {
+    // Compute Gram matrix G of A such that G = A' * A.
+    val G = computeGramianMatrix().asBreeze.toDenseMatrix
+    // Compute the eigenvalue decomposition of G
+    // such that G = U * D * U'.
+    val EigSym(eigenValues, eigenVectors) = eigSym(G)
+    // Find the effective rank of G.
+    val eigenRank = {
+      var i = eigenValues.length - 1
+      while (i >= 0 && eigenValues(i) > 1.0e-15 *
+        eigenValues(eigenValues.length - 1)) i = i - 1
+      i + 1
+    }
+    // Calculate Q such that Q = A * U and normalize Q such that each column
+    // of Q has norm 1.
+    val EigenVectors = eigenVectors(::, eigenVectors.cols - 1 to
+      eigenRank by -1)
+    val U = Matrices.dense(EigenVectors.rows, EigenVectors.cols,
+      eigenVectors(::, eigenVectors.cols - 1 to eigenRank by -1).toArray)
+    val Qunnormal = multiply(U)
+    val normQ = Statistics.colStats(Qunnormal.rows).normL2.asBreeze.toDenseVector
+    val Q = Qunnormal.multiply(Matrices.diag(Vectors.fromBreeze(1.0 / normQ)))
+    // Compute R such that A = Q * R.
+    val Umat = U.asBreeze.toDenseMatrix
+    val R = new BDM[Double](Umat.cols, Umat.rows)
+    for (i <- 0 until Umat.cols) {
+      R(i, ::) := (Umat(::, i) * normQ(i)).t
+    }
+    (Q, R)
   }
 
   /**
