@@ -479,7 +479,7 @@ class RowMatrix @Since("1.0.0") (
   }
 
   /**
-    * Compute SVD decomposition for [[RowMatrix]]. The implementation is
+    * Compute SVD decomposition for [[RowMatrix]] A. The implementation is
     * designed to optimize the SVD decomposition (factorization) for the
     * [[RowMatrix]] of a tall and skinny shape. We multiply the matrix being
     * processed by a random orthogonal matrix in order to mix the columns,
@@ -505,11 +505,18 @@ class RowMatrix @Since("1.0.0") (
     * @param k number of singular values to keep. We might return less than k
     *          if there are numerically zero singular values. See rCond.
     * @param computeU whether to compute U
+    * @param isGram whether to compute the Gram matrix for matrix
+ +  *               orthonormalization.
+    * @param ifTwice whether to compute orthonormalization twice to make the
+    *                columns of the matrix be orthonormal to nearly the machine
+    *                precision.
     * @param rCond the reciprocal condition number. All singular values smaller
     *              than rCond * sigma(0) are treated as zero, where sigma(0) is
     *              the largest singular value.
     * @param iteration number of times to run multiplyDFS.
     * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
+    * @note it will lose half or more of the precision of the arithmetic
+    *       but could accelerate the computation if isGram = true.
     */
   @Since("2.0.0")
   def tallSkinnySVD(sc: SparkContext, k: Int, computeU: Boolean = false,
@@ -519,9 +526,8 @@ class RowMatrix @Since("1.0.0") (
 
     /**
       * Convert [[Matrix]] to [[RDD[Vector]]].
-      *
       * @param mat an [[Matrix]].
-      * @param sc  SparkContext used to create RDDs.
+      * @param sc SparkContext used to create RDDs.
       * @return RDD[Vector].
       */
     def toRDD(mat: Matrix, sc: SparkContext): RDD[Vector] = {
@@ -535,16 +541,21 @@ class RowMatrix @Since("1.0.0") (
 
     require(k > 0 && k <= numCols().toInt,
       s"Requested k singular values but got k=$k and numCols=$numCols().toInt.")
-
+    // Compute Q and R such that A = Q * R where the columns of Q is orthonormal.
     val (qMat, rMat) = if (isGram) {
-      val (qMat, rMat) = if (ifTwice) {
+      if (ifTwice) {
+        // Apply orthonormal twice to A in order to produce the factorization
+        // A = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R. Orthonormalizing
+        // twice makes the columns of the matrix be orthonormal to nearly the machine
+        // precision. Later parts of the code assume that the columns are numerically
+        // orthonormal in order to simplify the computations.
         val (qMat1, rMat1) = orthonormal
-        val qMat2 = qMat1.orthonormal
-        (qMat2._1, qMat2._2 * rMat1)
+        val (qMat2, rMat2) = qMat1.orthonormal
+        (qMat2, rMat2 * rMat1)
       } else {
+        // Apply orthonormal to A such that A = Q * R.
         orthonormal
       }
-      (qMat, rMat)
     } else {
       // Convert the input RowMatrix A to another RowMatrix B by multiplying with
       // a random matrix, discrete fourier transform, and random shuffle,
@@ -608,7 +619,6 @@ class RowMatrix @Since("1.0.0") (
     *
     * @return a [[RowMatrix]] Q whose columns are orthonormal vectors and
     *         a [[DenseMatrix]] R such that A = Q * R.
-    *
     * @note it will lose half or more of the precision of the arithmetic
     *       but could accelerate the computation compared to tallSkinnyQR.
     */
