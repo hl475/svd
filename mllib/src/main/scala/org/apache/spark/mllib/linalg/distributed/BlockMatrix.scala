@@ -20,16 +20,14 @@ package org.apache.spark.mllib.linalg.distributed
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
 
-import breeze.linalg.{eigSym, svd => brzSvd, DenseMatrix => BDM,
+import breeze.linalg.{svd => brzSvd, DenseMatrix => BDM,
   DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV}
-import breeze.linalg.eigSym.EigSym
 import breeze.numerics.ceil
 
 import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
-import org.apache.spark.mllib.stat.Statistics
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 

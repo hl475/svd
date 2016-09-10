@@ -92,23 +92,11 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
 
     println("Max value of non-diagonal entries of left sigular vectors")
     val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
-    /*
-    for (i <- 0 until gramU.rows) {
-      val temp = gramU(i, ::).t.toArray
-      println(temp.mkString(" "))
-    }
-    */
     val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
     println(maxU)
 
     println("Max value of non-diagonal entries of right sigular vectors")
     val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
-    /*
-    for (i <- 0 until gramV.rows) {
-      val temp = gramV(i, ::).t.toArray
-      println(temp.mkString(" "))
-    }
-    */
     val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
     println(maxV)
 
@@ -147,23 +135,11 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
 
     println("Max value of non-diagonal entries of left sigular vectors")
     val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
-    /*
-    for (i <- 0 until gramU.rows) {
-      val temp = gramU(i, ::).t.toArray
-      println(temp.mkString(" "))
-    }
-    */
     val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
     println(maxU)
 
     println("Max value of non-diagonal entries of right sigular vectors")
     val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
-    /*
-    for (i <- 0 until gramV.rows) {
-      val temp = gramV(i, ::).t.toArray
-      println(temp.mkString(" "))
-    }
-    */
     val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
     println(maxV)
 
