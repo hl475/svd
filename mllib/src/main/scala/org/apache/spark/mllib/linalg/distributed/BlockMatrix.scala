@@ -597,7 +597,7 @@ class BlockMatrix @Since("1.3.0") (
     SingularValueDecomposition[BlockMatrix, Matrix] = {
       // Orthonormalize Q (now known as Q1) so the columns of left singular
       // vectors of A will be orthonormal to 15 digits.
-      val Q1 = Q.orthonormal(isGram = true, sc)
+      val Q1 = Q.orthonormal(isGram = true, ifTwice = false, sc)
       // Compute B = A' * Q1.
       val B = transpose.multiply(Q1)
 
@@ -610,7 +610,7 @@ class BlockMatrix @Since("1.3.0") (
         // only to the square root of the machine precision (having come from
         // the Gram matrix). Later parts of the code assume that the columns
         // are numerically orthonormal in order to simplify the computations.
-        val Y = B.orthonormal(isGram, sc).orthonormal(isGram, sc)
+        val Y = B.orthonormal(isGram, ifTwice = true, sc)
 
         // Compute R = (B' * Y)' = Y' * B.
         val R = Y.transpose.multiply(B)
@@ -655,19 +655,19 @@ class BlockMatrix @Since("1.3.0") (
     // V = A * V, with the V on the left now known as x.
     val x = multiply(V)
     // Orthonormalize V (now known as x).
-    var y = x.orthonormal(isGram, sc)
+    var y = x.orthonormal(isGram, ifTwice = false, sc)
 
     for (i <- 0 until iteration) {
       // V = A' * V,  with the V on the left now known as a, and the V on
       // the right known as y.
       val a = transpose.multiply(y)
       // Orthonormalize V (now known as a).
-      val b = a.orthonormal(isGram, sc)
+      val b = a.orthonormal(isGram, ifTwice = false, sc)
       // V = A * V, with the V on the left now known as c, and the V on
       // the right known as b.
       val c = multiply(b)
       // Orthonormalize V (now known as c).
-      y = c.orthonormal(isGram, sc)
+      y = c.orthonormal(isGram, ifTwice = false, sc)
     }
 
     // Find SVD of A using V (now known as y).
@@ -677,11 +677,14 @@ class BlockMatrix @Since("1.3.0") (
   /**
     * Orthonormalize the columns of the [[BlockMatrix]] V by using
     * tallSkinnySVD. We convert V to [[RowMatrix]] first, then apply
-    * tallSkinnySVD. The columns of the result orthonormal matrix is the left
+    * tallSkinnySVD. The columns of the result orthonormal matrix are the left
     * singular vectors of the input matrix V.
     *
     * @param isGram whether to compute the Gram matrix when computing
     *               tallSkinnySVD.
+    * @param ifTwice whether to compute orthonormalization twice to make the
+    *                columns of the matrix be orthonormal to nearly the machine
+    *                precision.
     * @param sc SparkContext used to create RDDs when isGram is false.
     * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
     *
@@ -689,11 +692,12 @@ class BlockMatrix @Since("1.3.0") (
     * of the arithmetic but could accelerate the computation.
     */
   @Since("2.0.0")
-  def orthonormal(isGram: Boolean = true, sc: SparkContext): BlockMatrix = {
+  def orthonormal(isGram: Boolean = false, ifTwice: Boolean = true,
+                  sc: SparkContext): BlockMatrix = {
     // Orthonormalize the columns of the input BlockMatrix.
     val indices = toIndexedRowMatrix().rows.map(_.index)
     val Q = toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc, nCols.toInt,
-      computeU = true, isGram).U
+      computeU = true, isGram, ifTwice).U
     val indexedRows = indices.zip(Q.rows).map { case (i, v) =>
       IndexedRow(i, v)}
     new IndexedRowMatrix(indexedRows).toBlockMatrix(rowsPerBlock, colsPerBlock)

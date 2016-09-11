@@ -25,6 +25,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val k = Seq(25, 20, 50)
     val caseNumS = Seq(1, 5, 9)
     val isGram = Seq(true, false, true)
+    val ifTwice = Seq(true, false, false)
     val computeU = true
     val iterPower = 1
     val iterSpectralNorm = 20
@@ -36,6 +37,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
         ", k = " + k(i))
       println("Setting: caseNumS = " + caseNumS(i))
       println("Setting: isGram = " + isGram(i))
+      println("Setting: ifTwice = " + ifTwice(i))
       println("--------------------------------")
       println("Generate BlockMatrix")
       val A = generateMatrix(numRows(i),
@@ -49,7 +51,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       // test tallSkinnySVD
       println("Test tallSkinnySVD")
       val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A, k(i), computeU,
-        isGram(i), iterSpectralNorm)
+        isGram(i), ifTwice(i), iterSpectralNorm)
       println("Test tallSkinnySVD done")
 
       println("Result: ratio of spectral norm between diff and input")
@@ -111,13 +113,14 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   }
 
   def tallSkinnySVDSuite(A: BlockMatrix, k: Int, computeU: Boolean,
-                         isGram: Boolean, iter: Int): (Double, Double, Double) = {
+                         isGram: Boolean, ifTwice: Boolean, iter: Int):
+  (Double, Double, Double) = {
     println("Convert BlockMatrix to RowMatrix")
     val indices = A.toIndexedRowMatrix().rows.map(_.index)
     val B = A.toIndexedRowMatrix().toRowMatrix()
     println("Done")
     println("Compute tallSkinnySVD")
-    val svd = time {B.tallSkinnySVD(sc, k, computeU, isGram)}
+    val svd = time {B.tallSkinnySVD(sc, k, computeU, isGram, ifTwice)}
     println("Done")
 
     val U = svd.U // RowMatrix
