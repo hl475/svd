@@ -520,7 +520,7 @@ class RowMatrix @Since("1.0.0") (
     */
   @Since("2.0.0")
   def tallSkinnySVD(sc: SparkContext, k: Int, computeU: Boolean = false,
-                    isGram: Boolean = true, ifTwice: Boolean = true,
+                    isGram: Boolean = false, ifTwice: Boolean = true,
                     rCond: Double = 1e-12, iteration: Int = 2):
   SingularValueDecomposition[RowMatrix, Matrix] = {
 
@@ -541,14 +541,13 @@ class RowMatrix @Since("1.0.0") (
 
     require(k > 0 && k <= numCols().toInt,
       s"Requested k singular values but got k=$k and numCols=$numCols().toInt.")
-    // Compute Q and R such that A = Q * R where the columns of Q is orthonormal.
+    // Compute Q and R such that A = Q * R where the columns of Q are orthonormal.
     val (qMat, rMat) = if (isGram) {
       if (ifTwice) {
         // Apply orthonormal twice to A in order to produce the factorization
         // A = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R. Orthonormalizing
         // twice makes the columns of the matrix be orthonormal to nearly the machine
-        // precision. Later parts of the code assume that the columns are numerically
-        // orthonormal in order to simplify the computations.
+        // precision.
         val (qMat1, rMat1) = orthonormal
         val (qMat2, rMat2) = qMat1.orthonormal
         (qMat2, rMat2 * rMat1)
@@ -614,8 +613,8 @@ class RowMatrix @Since("1.0.0") (
   /**
     * Orthonormalize the columns of the [[RowMatrix]] A. We (1) compute
     * the Gram matrix G = A' * A, (2) apply the eigenvalue decomposition
-    * on G = U * D * U', and compute Q = A * U and normalize each column
-    * of Q, (3) We also compute R such that A = Q * R.
+    * on G = U * D * U', and (3) compute Q = A * U and normalize each column
+    * of Q. We also compute R such that A = Q * R.
     *
     * @return a [[RowMatrix]] Q whose columns are orthonormal vectors and
     *         a [[DenseMatrix]] R such that A = Q * R.
