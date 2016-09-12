@@ -597,38 +597,18 @@ class BlockMatrix @Since("1.3.0") (
     def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean,
                  isGram: Boolean, sc: SparkContext):
     SingularValueDecomposition[BlockMatrix, Matrix] = {
-      // Orthonormalize Q (now known as Q1) so the columns of left singular
-      // vectors of A will be orthonormal to 15 digits.
-      val Q1 = Q.orthonormal(isGram = true, ifTwice = false, sc)
+      // Orthonormalize Q (now known as Q1) twice (once below, once from the
+      // power iteration before passing to lastStep) so the columns of left
+      // singular vectors of A will be orthonormal to 15 digits.
+      val Q1 = Q.orthonormal(isGram, ifTwice = false, sc)
       // Compute B = A' * Q1.
       val B = transpose.multiply(Q1)
 
       // Find SVD of B such that B = V * S * X'.
-      val (svdResult, indices) = if (isGram) {
-        // Orthonormalize B (now known as Y) twice so the columns of right
-        // singular vectors will be orthonormal to 15 digits. Orthonormalizing
-        // twice makes the columns of the matrix be orthonormal to nearly the
-        // machine precision, but they still will span the original column space
-        // only to the square root of the machine precision (having come from
-        // the Gram matrix). Later parts of the code assume that the columns
-        // are numerically orthonormal in order to simplify the computations.
-        val Y = B.orthonormal(isGram, ifTwice = true, sc)
-
-        // Compute R = (B' * Y)' = Y' * B.
-        val R = Y.transpose.multiply(B)
-        // Compute svd of R such that R = W * S * X'.
-        val brzSvd.SVD(w, s, xt) = brzSvd.reduced.apply(R.toBreeze())
-        val WMat = Matrices.fromBreeze(w)
-        val sk = Vectors.fromBreeze(s)
-        val XMat = Matrices.fromBreeze(xt).transpose
-        // Return svd of B such that B = (Y * W) * S * X' = V * S * X'.
-        (SingularValueDecomposition(Y.toIndexedRowMatrix().toRowMatrix().
-          multiply(WMat), sk, XMat), Y.toIndexedRowMatrix().rows.map(_.index))
-      } else {
-        (B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc,
-          Math.min(k, B.nCols.toInt), computeU = true, rCond = 1.0e-15),
-          B.toIndexedRowMatrix().rows.map(_.index))
-      }
+      val indices = B.toIndexedRowMatrix().rows.map(_.index)
+      val rCond = if (isGram) 1.0e-15 else 1.0e-15
+      val svdResult = B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc,
+        Math.min(k, B.nCols.toInt), computeU = true, isGram, ifTwice = true, rCond)
 
       // Convert V's type.
       val indexedRows = indices.zip(svdResult.U.rows).map { case (i, v) =>
@@ -649,9 +629,7 @@ class BlockMatrix @Since("1.3.0") (
     }
 
     // Whether to set the random seed or not. Set the seed would help debug.
-    if (!isRandom) {
-      Random.setSeed(513427689.toLong)
-    }
+    if (!isRandom) Random.setSeed(513427689.toLong)
     val V = generateRandomMatrices(k, sc)
 
     // V = A * V, with the V on the left now known as x.
