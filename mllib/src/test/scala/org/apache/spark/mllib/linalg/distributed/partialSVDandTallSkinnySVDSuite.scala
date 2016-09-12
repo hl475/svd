@@ -20,17 +20,17 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   val numPartitions = 30
 
   test("Test SVD") {
-    val numRows = Seq(400, 200, 1000)
-    val numCols = Seq(300, 100, 500)
-    val k = Seq(25, 20, 50)
-    val caseNumS = Seq(1, 5, 9)
-    val isGram = Seq(true, false, true)
-    val ifTwice = Seq(true, false, false)
+    val numRows = Seq(400, 400, 200, 1000)
+    val numCols = Seq(300, 300, 100, 500)
+    val k = Seq(25, 25, 20, 50)
+    val caseNumS = Seq(1, 4, 5, 9)
+    val isGram = Seq(true, true, false, false)
+    val ifTwice = Seq(true, false, true, false)
     val computeU = true
     val iterPower = 1
     val iterSpectralNorm = 20
     val isRandom = true
-    for (i <- 0 to 2) {
+    for (i <- 0 to 3) {
       println("--------------------------------" +
         "--------------------------------")
       println("Setting: m = " + numRows(i) + ", n = " + numCols(i) +
@@ -57,17 +57,16 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Result: ratio of spectral norm between diff and input")
       println("partialSVD:    " + ratio1)
       println("tallSkinnySVD: " + ratio2)
-      if (isGram(i)) {
-        assert(ratio1 ~== 0.0 absTol 1E-6)
-        assert(ratio2 ~== 0.0 absTol 1E-6)
-      } else {
-        assert(ratio1 ~== 0.0 absTol 1E-13)
-        assert(ratio2 ~== 0.0 absTol 1E-13)
-      }
-      assert(maxU1 ~== 0.0 absTol 1E-10)
-      assert(maxV1 ~== 0.0 absTol 1E-10)
-      assert(maxU2 ~== 0.0 absTol 1E-10)
-      assert(maxV2 ~== 0.0 absTol 1E-10)
+
+      val gramTol = if (isGram(i)) 1E-6 else 1E-13
+      assert(ratio1 ~== 0.0 absTol gramTol)
+      assert(ratio2 ~== 0.0 absTol gramTol)
+
+      val orthoTol = if (ifTwice(i)) 1E-14 else 1E-3
+      assert(maxU1 ~== 0.0 absTol orthoTol)
+      assert(maxV1 ~== 0.0 absTol orthoTol)
+      assert(maxU2 ~== 0.0 absTol orthoTol)
+      assert(maxV2 ~== 0.0 absTol orthoTol)
       println("Test passed")
       println("--------------------------------" +
         "--------------------------------")
