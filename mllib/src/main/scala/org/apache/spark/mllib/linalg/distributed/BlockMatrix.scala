@@ -604,7 +604,7 @@ class BlockMatrix @Since("1.3.0") (
 
       // Find SVD of B such that B = V * S * X'.
       val indices = B.toIndexedRowMatrix().rows.map(_.index)
-      val rCond = if (isGram) 1.0e-15 else 1.0e-15
+      val rCond = if (isGram) 1.0e-7 else 1.0e-15
       val svdResult = B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc,
         Math.min(k, B.nCols.toInt), computeU = true, isGram, ifTwice = true, rCond)
 
