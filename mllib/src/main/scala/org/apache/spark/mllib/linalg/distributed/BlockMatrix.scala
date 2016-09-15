@@ -20,9 +20,9 @@ package org.apache.spark.mllib.linalg.distributed
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
 
-import breeze.linalg.{svd => brzSvd, DenseMatrix => BDM,
-  DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV}
-import breeze.numerics.ceil
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, Matrix => BM,
+SparseVector => BSV, Vector => BV}
+import breeze.numerics._
 
 import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
@@ -531,7 +531,7 @@ class BlockMatrix @Since("1.3.0") (
     */
   @Since("2.0.0")
   def partialSVD(k: Int, sc: SparkContext, computeU: Boolean = false,
-                 isGram: Boolean = true, iteration: Int = 2,
+                 isGram: Boolean = false, iteration: Int = 2,
                  isRandom: Boolean = true):
   SingularValueDecomposition[BlockMatrix, Matrix] = {
 
@@ -594,21 +594,15 @@ class BlockMatrix @Since("1.3.0") (
       * orthonormalize twice to makes the columns of the matrix be orthonormal
       * to 15 digits.
       */
-    def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean,
-                 isGram: Boolean, sc: SparkContext):
+    def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean, isGram: Boolean):
     SingularValueDecomposition[BlockMatrix, Matrix] = {
-      // Orthonormalize Q (now known as Q1) twice (once below, once from the
-      // power iteration before passing to lastStep) so the columns of left
-      // singular vectors of A will be orthonormal to 15 digits.
-      val Q1 = Q.orthonormal(isGram, ifTwice = false, sc)
-      // Compute B = A' * Q1.
-      val B = transpose.multiply(Q1)
+      // Compute B = A' * Q.
+      val B = transpose.multiply(Q)
 
       // Find SVD of B such that B = V * S * X'.
       val indices = B.toIndexedRowMatrix().rows.map(_.index)
-      val rCond = if (isGram) 1.0e-7 else 1.0e-15
-      val svdResult = B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc,
-        Math.min(k, B.nCols.toInt), computeU = true, isGram, ifTwice = true, rCond)
+      val svdResult = B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(
+        Math.min(k, B.nCols.toInt), sc, computeU = true, isGram, ifTwice = true)
 
       // Convert V's type.
       val indexedRows = indices.zip(svdResult.U.rows).map { case (i, v) =>
@@ -621,7 +615,7 @@ class BlockMatrix @Since("1.3.0") (
       if (computeU) {
         // U = Q * X.
         val XMat = svdResult.V
-        val U = Q1.toIndexedRowMatrix().multiply(XMat).toBlockMatrix()
+        val U = Q.toIndexedRowMatrix().multiply(XMat).toBlockMatrix()
         SingularValueDecomposition(U, svdResult.s, V)
       } else {
         SingularValueDecomposition(null, svdResult.s, V)
@@ -635,23 +629,26 @@ class BlockMatrix @Since("1.3.0") (
     // V = A * V, with the V on the left now known as x.
     val x = multiply(V)
     // Orthonormalize V (now known as x).
-    var y = x.orthonormal(isGram, ifTwice = false, sc)
+    var y = x.orthonormal(sc, isGram, ifTwice = false)
 
     for (i <- 0 until iteration) {
       // V = A' * V,  with the V on the left now known as a, and the V on
       // the right known as y.
       val a = transpose.multiply(y)
       // Orthonormalize V (now known as a).
-      val b = a.orthonormal(isGram, ifTwice = false, sc)
+      val b = a.orthonormal(sc, isGram, ifTwice = false)
       // V = A * V, with the V on the left now known as c, and the V on
       // the right known as b.
       val c = multiply(b)
-      // Orthonormalize V (now known as c).
-      y = c.orthonormal(isGram, ifTwice = false, sc)
+      // Orthonormalize V (now known as c). If it is the last iteration, we
+      // perform orthonormalization twice so the columns of left singular
+      // vectors of A will be orthonormal to 15 digits.
+      val ifTwice = if (i == iteration - 1) true else false
+      y = c.orthonormal(sc, isGram, ifTwice)
     }
 
     // Find SVD of A using V (now known as y).
-    lastStep(y, k, computeU, isGram, sc)
+    lastStep(y, k, computeU, isGram)
   }
 
   /**
@@ -660,24 +657,24 @@ class BlockMatrix @Since("1.3.0") (
     * tallSkinnySVD. The columns of the result orthonormal matrix are the left
     * singular vectors of the input matrix V.
     *
+    * @param sc SparkContext used to create RDDs if isGram = false.
     * @param isGram whether to compute the Gram matrix when computing
     *               tallSkinnySVD.
     * @param ifTwice whether to compute orthonormalization twice to make the
     *                columns of the matrix be orthonormal to nearly the machine
     *                precision.
-    * @param sc SparkContext used to create RDDs when isGram is false.
     * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
     *
     * @note if isGram is true, it will lose half or more of the precision
     * of the arithmetic but could accelerate the computation.
     */
   @Since("2.0.0")
-  def orthonormal(isGram: Boolean = false, ifTwice: Boolean = true,
-                  sc: SparkContext): BlockMatrix = {
+  def orthonormal(sc: SparkContext = null, isGram: Boolean = false,
+                  ifTwice: Boolean = true): BlockMatrix = {
     // Orthonormalize the columns of the input BlockMatrix.
     val indices = toIndexedRowMatrix().rows.map(_.index)
-    val Q = toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(sc, nCols.toInt,
-      computeU = true, isGram, ifTwice).U
+    val Q = toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(nCols.toInt,
+      sc, computeU = true, ifTwice, isGram).U
     val indexedRows = indices.zip(Q.rows).map { case (i, v) =>
       IndexedRow(i, v)}
     new IndexedRowMatrix(indexedRows).toBlockMatrix(rowsPerBlock, colsPerBlock)
@@ -706,6 +703,7 @@ class BlockMatrix @Since("1.3.0") (
       // v = v / norm(v).
       val temp = Vectors.dense(v.toBreeze().toArray)
       val vUnit = temp.asBreeze * (1.0 / Vectors.norm(temp, 2))
+
       // Convert v back to BlockMatrix.
       val indexedRow = Seq.tabulate(v.numRows().toInt)(n => (n.toLong,
         Vectors.dense(vUnit(n)))).map(x => IndexedRow(x._1, x._2))

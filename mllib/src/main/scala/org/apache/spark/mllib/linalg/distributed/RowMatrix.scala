@@ -481,9 +481,10 @@ class RowMatrix @Since("1.0.0") (
   /**
     * Compute SVD decomposition for [[RowMatrix]] A. The implementation is
     * designed to optimize the SVD decomposition (factorization) for the
-    * [[RowMatrix]] of a tall and skinny shape. We multiply the matrix being
-    * processed by a random orthogonal matrix in order to mix the columns,
-    * obviating the need for pivoting.
+    * [[RowMatrix]] of a tall and skinny shape. We either: (1) multiply the
+    * matrix being processed by a random orthogonal matrix in order to mix the
+    * columns, obviating the need for pivoting; or (2) compute the Gram matrix
+    * of A.
     *
     * References:
     *   Parker, Douglass Stott, and Brad Pierce. The randomizing FFT: an
@@ -500,28 +501,28 @@ class RowMatrix @Since("1.0.0") (
     *   International Conference for High Performance Computing, Networking,
     *   Storage and Analysis. ACM, 2015.
     *
-    * @param sc SparkContext used in an intermediate step which converts an
-    *           upper triangular matrix to RDD[Vector].
     * @param k number of singular values to keep. We might return less than k
     *          if there are numerically zero singular values. See rCond.
-    * @param computeU whether to compute U
+    * @param sc SparkContext used in an intermediate step which converts an
+    *           upper triangular matrix to RDD[Vector] if isGram = false.
+    * @param computeU whether to compute U.
     * @param isGram whether to compute the Gram matrix for matrix
- +  *               orthonormalization.
+    *               orthonormalization.
     * @param ifTwice whether to compute orthonormalization twice to make the
     *                columns of the matrix be orthonormal to nearly the machine
     *                precision.
+    * @param iteration number of times to run multiplyDFS if isGram = false.
     * @param rCond the reciprocal condition number. All singular values smaller
     *              than rCond * sigma(0) are treated as zero, where sigma(0) is
     *              the largest singular value.
-    * @param iteration number of times to run multiplyDFS.
     * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
     * @note it will lose half or more of the precision of the arithmetic
     *       but could accelerate the computation if isGram = true.
     */
   @Since("2.0.0")
-  def tallSkinnySVD(sc: SparkContext, k: Int, computeU: Boolean = false,
+  def tallSkinnySVD(k: Int, sc: SparkContext = null, computeU: Boolean = false,
                     isGram: Boolean = false, ifTwice: Boolean = true,
-                    rCond: Double = 1e-12, iteration: Int = 2):
+                    iteration: Int = 2, rCond: Double = 1e-12):
   SingularValueDecomposition[RowMatrix, Matrix] = {
 
     /**
@@ -541,36 +542,55 @@ class RowMatrix @Since("1.0.0") (
 
     require(k > 0 && k <= numCols().toInt,
       s"Requested k singular values but got k=$k and numCols=$numCols().toInt.")
-    // Compute Q and R such that A = Q * R where the columns of Q are orthonormal.
+
+    // Compute Q and R such that A = Q * R where Q has orthonormal columns.
+    // When isGram = true, the columns of Q are the left singular vectors of A
+    // and R is not necessary upper triangular. When isGram = false, R is upper
+    // triangular.
     val (qMat, rMat) = if (isGram) {
       if (ifTwice) {
-        // Apply orthonormal twice to A in order to produce the factorization
-        // A = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R. Orthonormalizing
-        // twice makes the columns of the matrix be orthonormal to nearly the machine
-        // precision.
-        val (qMat1, rMat1) = orthonormal
-        val (qMat2, rMat2) = qMat1.orthonormal
-        (qMat2, rMat2 * rMat1)
+        // Apply computeSVDbyGram twice to A in order to produce the
+        // factorization A = U1 * S1 * V1' = U2 * (S2 * V2' * S1 * V1') = U2 * R.
+        // Orthonormalizing twice makes the columns of U2 be orthonormal to
+        // nearly the machine precision.
+        val svdResult1 = computeSVDbyGram
+        val svdResult2 = svdResult1.U.computeSVDbyGram
+        val V1 = svdResult1.V.asBreeze.toDenseMatrix
+        val V2 = svdResult2.V.asBreeze.toDenseMatrix
+        // Compute R1 = S1 * V1'.
+        val R1 = new BDM[Double](V1.cols, V1.rows)
+        for (i <- 0 until V1.cols) {
+          R1(i, ::) := (V1(::, i) * svdResult1.s(i)).t
+        }
+        // Compute R2 = S2 * V2'.
+        val R2 = new BDM[Double](V2.cols, V2.rows)
+        for (i <- 0 until V2.cols) {
+          R2(i, ::) := (V2(::, i) * svdResult2.s(i)).t
+        }
+
+        // Return U2 and R = R2 * R1.
+        (svdResult2.U, R2 * R1)
       } else {
-        // Apply orthonormal to A such that A = Q * R.
-        orthonormal
+        // Apply computeSVDbyGram to A and directly return the result.
+        return computeSVDbyGram
       }
     } else {
       // Convert the input RowMatrix A to another RowMatrix B by multiplying with
       // a random matrix, discrete fourier transform, and random shuffle,
       // i.e. A * Q = B where Q = D * F * S. Repeat several times, according to
-      // the number of iterations specified by iteration.
+      // the number of iterations specified by iteration (default 2).
       val (aq, randUnit, randIndex) = multiplyDFS(iteration,
         isForward = true, null, null)
 
       val (qMat, rMat) = if (ifTwice) {
         // Apply tallSkinnyQR twice to B in order to produce the factorization
         // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R. Orthonormalizing
-        // twice makes the columns of the matrix be orthonormal to nearly the machine
-        // precision. Later parts of the code assume that the columns are numerically
-        // orthonormal in order to simplify the computations.
+        // twice makes the columns of the matrix be orthonormal to nearly the
+        // machine precision. Later parts of the code assume that the columns
+        // are numerically orthonormal in order to simplify the computations.
         val qrResult1 = aq.tallSkinnyQR(computeQ = true)
         val qrResult2 = qrResult1.Q.tallSkinnyQR(computeQ = true)
+        // Return Q and R = R2 * R1.
         (qrResult2.Q, qrResult2.R.asBreeze.toDenseMatrix *
           qrResult1.R.asBreeze.toDenseMatrix)
       } else {
@@ -594,10 +614,12 @@ class RowMatrix @Since("1.0.0") (
 
     // Determine the effective rank.
     val rank = determineRank(k, s, rCond)
+
     // Truncate S, V.
     val sk = Vectors.fromBreeze(s(0 until rank))
     val VMat = Matrices.dense(rank, numCols().toInt, vt(0 until rank,
       0 until numCols().toInt).toArray).transpose
+
     if (computeU) {
       // Truncate W.
       val WMat = Matrices.dense(rMat.rows, rank,
@@ -611,46 +633,44 @@ class RowMatrix @Since("1.0.0") (
   }
 
   /**
-    * Orthonormalize the columns of the [[RowMatrix]] A. We (1) compute
-    * the Gram matrix G = A' * A, (2) apply the eigenvalue decomposition
-    * on G = U * D * U', and (3) compute Q = A * U and normalize each column
-    * of Q. We also compute R such that A = Q * R.
+    * Compute the singular value decomposition of the [[RowMatrix]] A such that
+    * A = U * S * V' via computing the Gram matrix of A. We (1) compute the
+    * Gram matrix G = A' * A, (2) apply the eigenvalue decomposition on
+    * G = V * D * V',(3) compute W = A * V, then the Euclidean norms of the
+    * columns of W are the singular values of A, and (4) normalizing the columns
+    * of W yields U such that A = U * S * V', where S is the diagonal matrix of
+    * singular values.
     *
-    * @return a [[RowMatrix]] Q whose columns are orthonormal vectors and
-    *         a [[DenseMatrix]] R such that A = Q * R.
+    * @return SingularValueDecomposition[U, s, V].
     * @note it will lose half or more of the precision of the arithmetic
     *       but could accelerate the computation compared to tallSkinnyQR.
     */
   @Since("2.0.0")
-  def orthonormal: (RowMatrix, BDM[Double]) = {
+  def computeSVDbyGram: SingularValueDecomposition[RowMatrix, Matrix] = {
     // Compute Gram matrix G of A such that G = A' * A.
     val G = computeGramianMatrix().asBreeze.toDenseMatrix
-    // Compute the eigenvalue decomposition of G
-    // such that G = U * D * U'.
-    val EigSym(eigenValues, eigenVectors) = eigSym(G)
+
+    // Compute the eigenvalue decomposition of G such that G = V * D * V'.
+    val EigSym(d, vMat) = eigSym(G)
+
     // Find the effective rank of G.
     val eigenRank = {
-      var i = eigenValues.length - 1
-      while (i >= 0 && eigenValues(i) > 1.0e-15 *
-        eigenValues(eigenValues.length - 1)) i = i - 1
+      var i = d.length - 1
+      while (i >= 0 && d(i) > 1e-14 * d(d.length - 1)) i = i - 1
       i + 1
     }
-    // Calculate Q such that Q = A * U and normalize Q such that each column
-    // of Q has norm 1.
-    val EigenVectors = eigenVectors(::, eigenVectors.cols - 1 to
-      eigenRank by -1)
-    val U = Matrices.dense(EigenVectors.rows, EigenVectors.cols,
-      eigenVectors(::, eigenVectors.cols - 1 to eigenRank by -1).toArray)
-    val Qunnormal = multiply(U)
-    val normQ = Statistics.colStats(Qunnormal.rows).normL2.asBreeze.toDenseVector
-    val Q = Qunnormal.multiply(Matrices.diag(Vectors.fromBreeze(1.0 / normQ)))
-    // Compute R such that A = Q * R.
-    val Umat = U.asBreeze.toDenseMatrix
-    val R = new BDM[Double](Umat.cols, Umat.rows)
-    for (i <- 0 until Umat.cols) {
-      R(i, ::) := (Umat(::, i) * normQ(i)).t
-    }
-    (Q, R)
+
+    // Calculate W such that W = A * V.
+    val vMatTruncated = vMat(::, vMat.cols - 1 to eigenRank by -1)
+    val V = Matrices.dense(vMatTruncated.rows, vMatTruncated.cols,
+      vMat(::, vMat.cols - 1 to eigenRank by -1).toArray)
+    val W = multiply(V)
+
+    // Normalize W to U such that each column of U has norm 1.
+    val normW = Statistics.colStats(W.rows).normL2.asBreeze.toDenseVector
+    val U = W.multiply(Matrices.diag(Vectors.fromBreeze(1.0 / normW)))
+
+    SingularValueDecomposition(U, Vectors.fromBreeze(normW), V)
   }
 
   /**

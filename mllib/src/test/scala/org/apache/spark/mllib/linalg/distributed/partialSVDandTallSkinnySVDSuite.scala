@@ -39,30 +39,28 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Setting: isGram = " + isGram(i))
       println("Setting: ifTwice = " + ifTwice(i))
       println("--------------------------------")
-      println("Generate BlockMatrix")
       val A = generateMatrix(numRows(i),
         numCols(i), k(i), caseNumS(i), sc)
-      println("Done")
       // test partialSVD
       println("Test partialSVD")
       val (ratio1, maxU1, maxV1) = partialSVDSuite(A, k(i), sc, computeU,
         isGram(i), iterPower, iterSpectralNorm, isRandom)
-      println("Test partialSVD done")
       // test tallSkinnySVD
+      println("--------------------------------" +
+        "--------------------------------")
       println("Test tallSkinnySVD")
       val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A, k(i), computeU,
         isGram(i), ifTwice(i), iterSpectralNorm)
-      println("Test tallSkinnySVD done")
 
       println("Result: ratio of spectral norm between diff and input")
       println("partialSVD:    " + ratio1)
       println("tallSkinnySVD: " + ratio2)
 
-      val gramTol = if (isGram(i)) 1E-6 else 1E-13
+      val gramTol = if (isGram(i)) 5E-6 else 5E-13
       assert(ratio1 ~== 0.0 absTol gramTol)
       assert(ratio2 ~== 0.0 absTol gramTol)
 
-      val orthoTol = if (ifTwice(i)) 1E-14 else 1E-3
+      val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
       assert(maxU1 ~== 0.0 absTol orthoTol)
       assert(maxV1 ~== 0.0 absTol orthoTol)
       assert(maxU2 ~== 0.0 absTol orthoTol)
@@ -79,7 +77,6 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
                       isRandom: Boolean): (Double, Double, Double) = {
     println("Compute partialSVD")
     val svdResult = time {A.partialSVD(k, sc, computeU, isGram, iter1, isRandom)}
-    println("Done")
 
     val U = svdResult.U.toIndexedRowMatrix()
     val S = svdResult.s
@@ -103,10 +100,8 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
 
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter2, sc)}
-    println("Done")
     println("Estimate the spectral norm of input")
     val snormA = time {A.spectralNormEst(iter2, sc)}
-    println("Done")
     val ratio = if (snormA != 0.0) snormDiff / snormA else 0.0
     (ratio, maxU, maxV)
   }
@@ -114,13 +109,10 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   def tallSkinnySVDSuite(A: BlockMatrix, k: Int, computeU: Boolean,
                          isGram: Boolean, ifTwice: Boolean, iter: Int):
   (Double, Double, Double) = {
-    println("Convert BlockMatrix to RowMatrix")
     val indices = A.toIndexedRowMatrix().rows.map(_.index)
     val B = A.toIndexedRowMatrix().toRowMatrix()
-    println("Done")
     println("Compute tallSkinnySVD")
-    val svd = time {B.tallSkinnySVD(sc, k, computeU, isGram, ifTwice)}
-    println("Done")
+    val svd = time {B.tallSkinnySVD(k, sc, computeU, isGram, ifTwice)}
 
     val U = svd.U // RowMatrix
     val S = svd.s // Vector
@@ -147,10 +139,8 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
 
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter, sc)}
-    println("Done")
     println("Estimate the spectral norm of input")
     val snormA = time {A.spectralNormEst(iter, sc)}
-    println("Done")
     val ratio = if (snormA != 0.0) snormDiff / snormA else 0.0
     (ratio, maxU, maxV)
   }
@@ -185,19 +175,22 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   def generateS(k: Int, caseNum: Int): Array[Double] = {
     caseNum match {
       case 1 =>
-        Array.tabulate(k) ( i => math.exp(i * -1.0) )
+        Array.tabulate(k) ( i => math.exp(math.log(1e-20) *
+          (k - 1 - i) / 3 * 3 / (k - 1)) ).sorted.reverse
       case 2 =>
         Array.tabulate(k) ( i => math.sqrt(i + 1.0)).sorted.reverse
       case 3 =>
         Array.tabulate(k) ( i => math.sqrt(i % 3)).sorted.reverse
       case 4 =>
-        Array.tabulate(k) ( i => 1.0e20 * math.exp(i * -1.0) )
+        Array.tabulate(k) ( i => 1.0e20 * math.exp(math.log(1e-20) *
+          (k - 1 - i) / 3 * 3 / (k - 1)) ).sorted.reverse
       case 5 =>
         Array.tabulate(k) ( i => 1.0e20 * math.sqrt(i + 1.0)).sorted.reverse
       case 6 =>
         Array.tabulate(k) ( i => 1.0e20 * math.sqrt(i % 3)).sorted.reverse
       case 7 =>
-        Array.tabulate(k) ( i => 1.0e-20 * math.exp(i * -1.0) )
+        Array.tabulate(k) ( i => 1.0e-20 * math.exp(math.log(1e-20) *
+          (k - 1 - i) / 3 * 3 / (k - 1)) ).sorted.reverse
       case 8 =>
         Array.tabulate(k) ( i => 1.0e-20 * math.sqrt(i + 1.0)).sorted.reverse
       case 9 =>
@@ -220,7 +213,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   }
   def time[R](block: => R): R = {
     val t0 = System.nanoTime()
-    val result = block    // call-by-name
+    val result = block
     val t1 = System.nanoTime()
     println("Elapsed time: " + (t1 - t0) / 1.0e9 + "s")
     result
