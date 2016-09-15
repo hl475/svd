@@ -634,7 +634,7 @@ class RowMatrix @Since("1.0.0") (
 
   /**
     * Compute the singular value decomposition of the [[RowMatrix]] A such that
-    * A = U * S * V' via computing the Gram matrix of A. We (1) compute the
+    * A ~= U * S * V' via computing the Gram matrix of A. We (1) compute the
     * Gram matrix G = A' * A, (2) apply the eigenvalue decomposition on
     * G = V * D * V',(3) compute W = A * V, then the Euclidean norms of the
     * columns of W are the singular values of A, and (4) normalizing the columns

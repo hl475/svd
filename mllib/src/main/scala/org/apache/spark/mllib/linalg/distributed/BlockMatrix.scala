@@ -504,7 +504,7 @@ class BlockMatrix @Since("1.3.0") (
   /**
     * Computes the randomized singular value decomposition of this BlockMatrix.
     * Denote this matrix by A (m x n), this will compute matrices U, S, V such
-    * that A = U * S * V', where the columns of U are orthonormal, S is a
+    * that A ~= U * S * V', where the columns of U are orthonormal, S is a
     * diagonal matrix with non-negative real numbers on the diagonal, and the
     * columns of V are orthonormal.
     *
@@ -579,8 +579,8 @@ class BlockMatrix @Since("1.3.0") (
 
     /**
       * Computes the partial singular value decomposition of the[[BlockMatrix]]
-      * A given an [[BlockMatrix]] Q such that A' is close to A' * Q * Q'.
-      * The columns of Q are orthonormal.
+      * A given an [[BlockMatrix]] Q such that A' ~= A' * Q * Q'. The columns
+      * of Q are orthonormal.
       *
       * @param Q a [[BlockMatrix]] with orthonormal columns.
       * @param k number of singular values to compute.
