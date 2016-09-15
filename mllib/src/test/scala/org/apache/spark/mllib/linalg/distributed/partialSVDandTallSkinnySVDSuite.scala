@@ -51,20 +51,30 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Test tallSkinnySVD")
       val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A, k(i), computeU,
         isGram(i), ifTwice(i), iterSpectralNorm)
+      // test computeSVD
+      println("--------------------------------" +
+        "--------------------------------")
+      println("Test computeSVD")
+      val (ratio3, maxU3, maxV3) = computeSVDSuite(A, k(i), computeU,
+        iterSpectralNorm)
 
       println("Result: ratio of spectral norm between diff and input")
       println("partialSVD:    " + ratio1)
       println("tallSkinnySVD: " + ratio2)
+      println("computeSVD: " + ratio3)
 
       val gramTol = if (isGram(i)) 5E-6 else 5E-13
       assert(ratio1 ~== 0.0 absTol gramTol)
       assert(ratio2 ~== 0.0 absTol gramTol)
+      // assert(ratio3 ~== 0.0 absTol gramTol)
 
       val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
       assert(maxU1 ~== 0.0 absTol orthoTol)
       assert(maxV1 ~== 0.0 absTol orthoTol)
       assert(maxU2 ~== 0.0 absTol orthoTol)
       assert(maxV2 ~== 0.0 absTol orthoTol)
+      // assert(maxU3 ~== 0.0 absTol orthoTol)
+      // assert(maxV3 ~== 0.0 absTol orthoTol)
       println("Test passed")
       println("--------------------------------" +
         "--------------------------------")
@@ -113,6 +123,44 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val B = A.toIndexedRowMatrix().toRowMatrix()
     println("Compute tallSkinnySVD")
     val svd = time {B.tallSkinnySVD(k, sc, computeU, isGram, ifTwice)}
+
+    val U = svd.U // RowMatrix
+    val S = svd.s // Vector
+    val V = svd.V // Matrix
+    val numk = S.toArray.length
+    val VDenseMat = new DenseMatrix(A.numCols().toInt, numk, V.toArray)
+    val SVT = Matrices.diag(S).multiply(VDenseMat.transpose).toArray
+    val SVTMat = Matrices.dense(numk, A.numCols().toInt, SVT)
+    val USVT = U.multiply(SVTMat)
+    val indexedRows = indices.zip(USVT.rows).map { case (i, v) =>
+      IndexedRow(i, v)}
+    val USVTIndexedRowMat = new IndexedRowMatrix(indexedRows)
+    val diff = A.subtract(USVTIndexedRowMat.toBlockMatrix(rowPerPart, colPerPart))
+
+    println("Max value of non-diagonal entries of left sigular vectors")
+    val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
+    val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
+    println(maxU)
+
+    println("Max value of non-diagonal entries of right sigular vectors")
+    val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
+    val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
+    println(maxV)
+
+    println("Estimate the spectral norm of input and reconstruction")
+    val snormDiff = time {diff.spectralNormEst(iter, sc)}
+    println("Estimate the spectral norm of input")
+    val snormA = time {A.spectralNormEst(iter, sc)}
+    val ratio = if (snormA != 0.0) snormDiff / snormA else 0.0
+    (ratio, maxU, maxV)
+  }
+
+  def computeSVDSuite(A: BlockMatrix, k: Int, computeU: Boolean, iter: Int):
+  (Double, Double, Double) = {
+    val indices = A.toIndexedRowMatrix().rows.map(_.index)
+    val B = A.toIndexedRowMatrix().toRowMatrix()
+    println("Compute tallSkinnySVD")
+    val svd = time {B.computeSVD(k, computeU)}
 
     val U = svd.U // RowMatrix
     val S = svd.s // Vector
