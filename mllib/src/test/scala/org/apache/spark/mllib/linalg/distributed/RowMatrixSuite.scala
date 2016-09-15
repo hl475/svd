@@ -305,7 +305,7 @@ class RowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
       val brzSvd.SVD(localU, localSigma, localVt) = brzSvd(localMat)
       val localV: BDM[Double] = localVt.t.toDenseMatrix
       val k = n
-      val svd = mat.tallSkinnySVD(sc, k, computeU = true)
+      val svd = mat.tallSkinnySVD(k, sc, computeU = true)
       val U = svd.U
       val s = svd.s
       val V = svd.V
@@ -317,7 +317,7 @@ class RowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
       assertColumnEqualUpToSign(U.toBreeze(), localU, k)
       assertColumnEqualUpToSign(V.asBreeze.asInstanceOf[BDM[Double]], localV, k)
       assert(closeToZero(s.asBreeze.asInstanceOf[BDV[Double]] - localSigma(0 until k)))
-      val svdWithoutU = mat.tallSkinnySVD(sc, k, computeU = false)
+      val svdWithoutU = mat.tallSkinnySVD(k, sc, computeU = false)
       assert(svdWithoutU.U === null)
     }
   }
@@ -325,7 +325,7 @@ class RowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
   test("tallSkinnySVD of a low-rank matrix") {
     val rows = sc.parallelize(Array.fill(4)(Vectors.dense(1.0, 1.0, 1.0)), 2)
     val mat = new RowMatrix(rows, 4, 3)
-    val svd = mat.tallSkinnySVD(sc, 2, computeU = true)
+    val svd = mat.tallSkinnySVD(k = 2, sc, computeU = true)
     assert(svd.s.size === 1, s"should not return zero singular values but got ${svd.s}")
     assert(svd.U.numRows() === 4)
     assert(svd.U.numCols() === 1)
@@ -336,7 +336,7 @@ class RowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
   test("validate k in tallSkinnySVD") {
     for (mat <- Seq(denseMat, sparseMat)) {
       intercept[IllegalArgumentException] {
-        mat.tallSkinnySVD(sc, -1)
+        mat.tallSkinnySVD(k = -1, sc)
       }
     }
   }
