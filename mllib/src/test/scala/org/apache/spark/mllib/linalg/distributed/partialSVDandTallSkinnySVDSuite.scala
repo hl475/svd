@@ -24,7 +24,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val numCols = Seq(300, 300, 100, 500)
     val k = Seq(25, 25, 20, 50)
     val caseNumS = Seq(1, 4, 5, 9)
-    val isGram = Seq(true, true, false, false)
+    val isGram = Seq(true, false, false, true)
     val ifTwice = Seq(true, false, true, false)
     val computeU = true
     val iterPower = 1
@@ -38,7 +38,8 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Setting: caseNumS = " + caseNumS(i))
       println("Setting: isGram = " + isGram(i))
       println("Setting: ifTwice = " + ifTwice(i))
-      println("--------------------------------")
+      println("--------------------------------" +
+        "--------------------------------")
       val A = generateMatrix(numRows(i),
         numCols(i), k(i), caseNumS(i), sc)
       // test partialSVD
@@ -57,16 +58,17 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("Test computeSVD")
       val (ratio3, maxU3, maxV3) = computeSVDSuite(A, k(i), computeU,
         iterSpectralNorm)
-
+      println("--------------------------------" +
+        "--------------------------------")
       println("Result: ratio of spectral norm between diff and input")
       println("partialSVD:    " + ratio1)
       println("tallSkinnySVD: " + ratio2)
       println("computeSVD: " + ratio3)
 
-      val gramTol = if (isGram(i)) 5E-6 else 5E-13
+      val gramTol = 1e-7 // if (isGram(i)) 5E-6 else 5E-13
       assert(ratio1 ~== 0.0 absTol gramTol)
       assert(ratio2 ~== 0.0 absTol gramTol)
-      // assert(ratio3 ~== 0.0 absTol gramTol)
+      assert(ratio3 ~== 0.0 absTol gramTol)
 
       val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
       assert(maxU1 ~== 0.0 absTol orthoTol)
@@ -159,7 +161,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   (Double, Double, Double) = {
     val indices = A.toIndexedRowMatrix().rows.map(_.index)
     val B = A.toIndexedRowMatrix().toRowMatrix()
-    println("Compute tallSkinnySVD")
+    println("Compute computeSVD")
     val svd = time {B.computeSVD(k, computeU)}
 
     val U = svd.U // RowMatrix
