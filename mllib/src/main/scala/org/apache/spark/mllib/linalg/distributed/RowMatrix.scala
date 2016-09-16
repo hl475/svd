@@ -519,7 +519,7 @@ class RowMatrix @Since("1.0.0") (
   @Since("2.0.0")
   def tallSkinnySVD(k: Int, sc: SparkContext = null, computeU: Boolean = false,
                     isGram: Boolean = false, ifTwice: Boolean = true,
-                    iteration: Int = 2, rCond: Double = 1e-12):
+                    iteration: Int = 2, rCond: Double = 1e-9):
   SingularValueDecomposition[RowMatrix, Matrix] = {
 
     /**
@@ -550,8 +550,8 @@ class RowMatrix @Since("1.0.0") (
         // factorization A = U1 * S1 * V1' = U2 * (S2 * V2' * S1 * V1') = U2 * R.
         // Orthonormalizing twice makes the columns of U2 be orthonormal to
         // nearly the machine precision.
-        val svdResult1 = computeSVDbyGram
-        val svdResult2 = svdResult1.U.computeSVDbyGram
+        val svdResult1 = computeSVDbyGram(computeU = true)
+        val svdResult2 = svdResult1.U.computeSVDbyGram(computeU = true)
         val V1 = svdResult1.V.asBreeze.toDenseMatrix
         val V2 = svdResult2.V.asBreeze.toDenseMatrix
         // Compute R1 = S1 * V1'.
@@ -569,7 +569,7 @@ class RowMatrix @Since("1.0.0") (
         (svdResult2.U, R2 * R1)
       } else {
         // Apply computeSVDbyGram to A and directly return the result.
-        return computeSVDbyGram
+        return computeSVDbyGram(computeU)
       }
     } else {
       // Convert the input RowMatrix A to another RowMatrix B by multiplying with
@@ -631,9 +631,9 @@ class RowMatrix @Since("1.0.0") (
 
   /**
     * Compute the singular value decomposition of the [[RowMatrix]] A such that
-    * A ~= U * S * V' via computing the Gram matrix of A. We (1) compute the
+    * A ~ U * S * V' via computing the Gram matrix of A. We (1) compute the
     * Gram matrix G = A' * A, (2) apply the eigenvalue decomposition on
-    * G = V * D * V',(3) compute W = A * V, then the Euclidean norms of the
+    * G = V * D * V', (3) compute W = A * V, then the Euclidean norms of the
     * columns of W are the singular values of A, and (4) normalizing the columns
     * of W yields U such that A = U * S * V', where S is the diagonal matrix of
     * singular values.
@@ -643,7 +643,8 @@ class RowMatrix @Since("1.0.0") (
     *       but could accelerate the computation compared to tallSkinnyQR.
     */
   @Since("2.0.0")
-  def computeSVDbyGram: SingularValueDecomposition[RowMatrix, Matrix] = {
+  def computeSVDbyGram(computeU: Boolean = false):
+  SingularValueDecomposition[RowMatrix, Matrix] = {
     // Compute Gram matrix G of A such that G = A' * A.
     val G = computeGramianMatrix().asBreeze.toDenseMatrix
 
@@ -662,12 +663,15 @@ class RowMatrix @Since("1.0.0") (
     val V = Matrices.dense(vMatTruncated.rows, vMatTruncated.cols,
       vMat(::, vMat.cols - 1 to eigenRank by -1).toArray)
     val W = multiply(V)
-
-    // Normalize W to U such that each column of U has norm 1.
     val normW = Statistics.colStats(W.rows).normL2.asBreeze.toDenseVector
-    val U = W.multiply(Matrices.diag(Vectors.fromBreeze(1.0 / normW)))
 
-    SingularValueDecomposition(U, Vectors.fromBreeze(normW), V)
+    if (computeU) {
+      // Normalize W to U such that each column of U has norm 1.
+      val U = W.multiply(Matrices.diag(Vectors.fromBreeze(1.0 / normW)))
+      SingularValueDecomposition(U, Vectors.fromBreeze(normW), V)
+    } else {
+      SingularValueDecomposition(null, Vectors.fromBreeze(normW), V)
+    }
   }
 
   /**
