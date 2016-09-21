@@ -20,11 +20,11 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   val numPartitions = 30
 
   test("Test SVD") {
-    val numRows = Seq(400, 400, 200, 1000)
-    val numCols = Seq(300, 300, 100, 500)
-    val k = Seq(25, 25, 20, 50)
+    val numRows = Seq(100, 200, 500, 1000)
+    val numCols = Seq(50, 100, 200, 500)
+    val k = Seq(10, 20, 30, 50)
     val caseNumS = Seq(1, 4, 5, 9)
-    val isGram = Seq(true, false, false, true)
+    val isGram = Seq(true, true, false, false)
     val ifTwice = Seq(true, false, true, false)
     val computeU = true
     val iterPower = 1
@@ -65,10 +65,16 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("tallSkinnySVD: " + ratio2)
       println("computeSVD: " + ratio3)
 
-      val gramTol = 1e-7 // if (isGram(i)) 5E-6 else 5E-13
+      println("Result: max entries of non-diagonal entries of the Gram")
+      println("matrix of left singular vectors and right singular vectors")
+      println("partialSVD:    " + maxU1 + ", " + maxV1)
+      println("tallSkinnySVD: " + maxU2 + ", " + maxV2)
+      println("computeSVD: " + maxU2 + ", " + maxV2)
+
+      val gramTol = if (isGram(i)) 5E-6 else 5E-13
       assert(ratio1 ~== 0.0 absTol gramTol)
       assert(ratio2 ~== 0.0 absTol gramTol)
-      assert(ratio3 ~== 0.0 absTol gramTol)
+      // assert(ratio3 ~== 0.0 absTol gramTol)
 
       val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
       assert(maxU1 ~== 0.0 absTol orthoTol)
@@ -77,6 +83,66 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       assert(maxV2 ~== 0.0 absTol orthoTol)
       // assert(maxU3 ~== 0.0 absTol orthoTol)
       // assert(maxV3 ~== 0.0 absTol orthoTol)
+      println("Test passed")
+      println("--------------------------------" +
+        "--------------------------------")
+    }
+    println("All tests passed")
+  }
+
+  test("Test combinations of isGram and ifTwice") {
+    val numRows = 400
+    val numCols = 300
+    val k = 25
+    val caseNumS = 1
+    val isGram = Seq(true, true, false, false)
+    val ifTwice = Seq(true, false, true, false)
+    val computeU = true
+    val iterPower = 1
+    val iterSpectralNorm = 20
+    val isRandom = true
+
+    val A = generateMatrix(numRows, numCols, k, caseNumS, sc)
+    for (i <- 0 to 3) {
+      println("--------------------------------" +
+        "--------------------------------")
+      // println("Setting: m = " + numRows + ", n = " + numCols +
+      //   ", k = " + k + ", caseNumS = " + caseNumS)
+      println("Setting: isGram = " + isGram(i))
+      println("Setting: ifTwice = " + ifTwice(i))
+      println("--------------------------------" +
+        "--------------------------------")
+      // test partialSVD
+      println("Test partialSVD")
+      val (ratio1, maxU1, maxV1) = partialSVDSuite(A, k, sc, computeU,
+        isGram(i), iterPower, iterSpectralNorm, isRandom)
+      // test tallSkinnySVD
+      println("--------------------------------" +
+        "--------------------------------")
+      println("Test tallSkinnySVD")
+      val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A, k, computeU,
+        isGram(i), ifTwice(i), iterSpectralNorm)
+      // test computeSVD
+      println("--------------------------------" +
+        "--------------------------------")
+      println("Result: ratio of spectral norm between diff and input")
+      println("partialSVD:    " + ratio1)
+      println("tallSkinnySVD: " + ratio2)
+
+      println("Result: max entries of non-diagonal entries of the Gram")
+      println("matrix of left singular vectors and right singular vectors")
+      println("partialSVD:    " + maxU1 + ", " + maxV1)
+      println("tallSkinnySVD: " + maxU2 + ", " + maxV2)
+
+      val gramTol = 5E-6 // if (isGram(i)) 5E-6 else 5E-13
+      assert(ratio1 ~== 0.0 absTol gramTol)
+      assert(ratio2 ~== 0.0 absTol gramTol)
+
+      val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
+      assert(maxU1 ~== 0.0 absTol orthoTol)
+      assert(maxV1 ~== 0.0 absTol orthoTol)
+      assert(maxU2 ~== 0.0 absTol orthoTol)
+      assert(maxV2 ~== 0.0 absTol orthoTol)
       println("Test passed")
       println("--------------------------------" +
         "--------------------------------")
@@ -100,15 +166,10 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val USVT = U.multiply(SVTMat)
     val diff = A.subtract(USVT.toBlockMatrix(rowPerPart, colPerPart))
 
-    println("Max value of non-diagonal entries of left sigular vectors")
     val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
     val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
-    println(maxU)
-
-    println("Max value of non-diagonal entries of right sigular vectors")
     val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
     val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
-    println(maxV)
 
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter2, sc)}
@@ -139,15 +200,10 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val USVTIndexedRowMat = new IndexedRowMatrix(indexedRows)
     val diff = A.subtract(USVTIndexedRowMat.toBlockMatrix(rowPerPart, colPerPart))
 
-    println("Max value of non-diagonal entries of left sigular vectors")
     val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
     val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
-    println(maxU)
-
-    println("Max value of non-diagonal entries of right sigular vectors")
     val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
     val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
-    println(maxV)
 
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter, sc)}
@@ -177,15 +233,10 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val USVTIndexedRowMat = new IndexedRowMatrix(indexedRows)
     val diff = A.subtract(USVTIndexedRowMat.toBlockMatrix(rowPerPart, colPerPart))
 
-    println("Max value of non-diagonal entries of left sigular vectors")
     val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
     val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
-    println(maxU)
-
-    println("Max value of non-diagonal entries of right sigular vectors")
     val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
     val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
-    println(maxV)
 
     println("Estimate the spectral norm of input and reconstruction")
     val snormDiff = time {diff.spectralNormEst(iter, sc)}
