@@ -508,9 +508,9 @@ class RowMatrix @Since("1.0.0") (
     * @param computeU whether to compute U.
     * @param isGram whether to compute the Gram matrix for matrix
     *               orthonormalization.
-    * @param ifTwice whether to compute orthonormalization twice to make the
-    *                columns of the matrix be orthonormal to nearly the machine
-    *                precision.
+    * @param ifTwice whether to compute orthonormalization twice to make
+    *                 the columns of the matrix be orthonormal to nearly the
+    *                 machine precision.
     * @param iteration number of times to run multiplyDFS if isGram = false.
     * @param rCond the reciprocal condition number. All singular values smaller
     *              than rCond * sigma(0) are treated as zero, where sigma(0) is
@@ -522,7 +522,7 @@ class RowMatrix @Since("1.0.0") (
   @Since("2.0.0")
   def tallSkinnySVD(k: Int, sc: SparkContext = null, computeU: Boolean = false,
                     isGram: Boolean = false, ifTwice: Boolean = true,
-                    iteration: Int = 2, rCond: Double = 1e-9):
+                    iteration: Int = 2, rCond: Option[Double] = None):
   SingularValueDecomposition[RowMatrix, Matrix] = {
 
     /**
@@ -551,24 +551,20 @@ class RowMatrix @Since("1.0.0") (
       if (ifTwice) {
         // Apply computeSVDbyGram twice to A in order to produce the
         // factorization A = U1 * S1 * V1' = U2 * (S2 * V2' * S1 * V1') = U2 * R.
-        // Orthonormalizing twice makes the columns of U2 be orthonormal to
-        // nearly the machine precision.
+        // Orthonormalizing twice makes the columns of U3 be orthonormal
+        // to nearly the machine precision.
         val svdResult1 = computeSVDbyGram(computeU = true)
         val svdResult2 = svdResult1.U.computeSVDbyGram(computeU = true)
         val V1 = svdResult1.V.asBreeze.toDenseMatrix
         val V2 = svdResult2.V.asBreeze.toDenseMatrix
         // Compute R1 = S1 * V1'.
         val R1 = new BDM[Double](V1.cols, V1.rows)
-        for (i <- 0 until V1.cols) {
-          R1(i, ::) := (V1(::, i) * svdResult1.s(i)).t
-        }
+        for (i <- 0 until V1.cols) R1(i, ::) := (V1(::, i) * svdResult1.s(i)).t
         // Compute R2 = S2 * V2'.
         val R2 = new BDM[Double](V2.cols, V2.rows)
-        for (i <- 0 until V2.cols) {
-          R2(i, ::) := (V2(::, i) * svdResult2.s(i)).t
-        }
+        for (i <- 0 until V2.cols) R2(i, ::) := (V2(::, i) * svdResult2.s(i)).t
 
-        // Return U2 and R = R2 * R1.
+        // Return U3 and R = R3 * R2 * R1.
         (svdResult2.U, R2 * R1)
       } else {
         // Apply computeSVDbyGram to A and directly return the result.
@@ -583,11 +579,12 @@ class RowMatrix @Since("1.0.0") (
         isForward = true, null, null)
 
       val (qMat, rMat) = if (ifTwice) {
-        // Apply tallSkinnyQR twice to B in order to produce the factorization
-        // B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R. Orthonormalizing
-        // twice makes the columns of the matrix be orthonormal to nearly the
-        // machine precision. Later parts of the code assume that the columns
-        // are numerically orthonormal in order to simplify the computations.
+        // Apply tallSkinnyQR twice to B in order to produce the
+        // factorization B = Q1 * R1 = Q2 * R2 * R1 = Q2 * (R2 * R1) = Q * R.
+        // Orthonormalizing twice makes the columns of the matrix be
+        // orthonormal to nearly the machine precision. Later parts of the code
+        // assume that the columns are numerically orthonormal in order to
+        // simplify the computations.
         val qrResult1 = aq.tallSkinnyQR(computeQ = true)
         val qrResult2 = qrResult1.Q.tallSkinnyQR(computeQ = true)
         // Return Q and R = R2 * R1.
@@ -613,7 +610,9 @@ class RowMatrix @Since("1.0.0") (
     val brzSvd.SVD(w, s, vt) = brzSvd.reduced.apply(rMat)
 
     // Determine the effective rank.
-    val rank = determineRank(k, s, rCond)
+    val rConD = if (rCond.isDefined) rCond.get
+      else if (ifTwice & !isGram) 1e-12 else 1e-9
+    val rank = determineRank(k, s, rConD)
 
     // Truncate S, V.
     val sk = Vectors.fromBreeze(s(0 until rank))
@@ -657,7 +656,7 @@ class RowMatrix @Since("1.0.0") (
     // Find the effective rank of G.
     val eigenRank = {
       var i = d.length - 1
-      while (i >= 0 && d(i) > 1e-14 * d(d.length - 1)) i = i - 1
+      while (i >= 0 && d(i) > 1e-13 * d(d.length - 1)) i = i - 1
       i + 1
     }
 
