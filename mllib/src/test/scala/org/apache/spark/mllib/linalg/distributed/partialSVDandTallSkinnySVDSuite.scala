@@ -138,7 +138,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       assert(ratio1 ~== 0.0 absTol gramTol)
       assert(ratio2 ~== 0.0 absTol gramTol)
 
-      val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
+      val orthoTol = if (ifTwice(i)) 5E-13 else 5E-5
       assert(maxU1 ~== 0.0 absTol orthoTol)
       assert(maxV1 ~== 0.0 absTol orthoTol)
       assert(maxU2 ~== 0.0 absTol orthoTol)

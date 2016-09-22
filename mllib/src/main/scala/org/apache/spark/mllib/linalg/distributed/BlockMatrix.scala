@@ -659,8 +659,8 @@ class BlockMatrix @Since("1.3.0") (
     * @param isGram whether to compute the Gram matrix when computing
     *               tallSkinnySVD.
     * @param ifTwice whether to compute orthonormalization twice to make
-    *                 the columns of the matrix be orthonormal to nearly the
-    *                 machine precision.
+    *                the columns of the matrix be orthonormal to nearly the
+    *                machine precision.
     * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
     *
     * @note if isGram is true, it will lose half or more of the precision
@@ -671,13 +671,8 @@ class BlockMatrix @Since("1.3.0") (
                   ifTwice: Boolean = true): BlockMatrix = {
     // Orthonormalize the columns of the input BlockMatrix.
     val indices = toIndexedRowMatrix().rows.map(_.index)
-    val Q = if (ifTwice) {
-      val U = toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(nCols.toInt,
-        sc, computeU = true, ifTwice, isGram).U
-      U.tallSkinnySVD(U.numCols().toInt, sc, computeU = true, ifTwice, isGram).U
-    }
-    else toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(nCols.toInt,
-      sc, computeU = true, ifTwice, isGram).U
+    val Q = toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(nCols.toInt,
+        sc, computeU = true, isGram, ifTwice).U
     val indexedRows = indices.zip(Q.rows).map { case (i, v) =>
       IndexedRow(i, v)}
     new IndexedRowMatrix(indexedRows).toBlockMatrix(rowsPerBlock, colsPerBlock)
