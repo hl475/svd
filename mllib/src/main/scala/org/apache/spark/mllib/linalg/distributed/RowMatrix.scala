@@ -506,8 +506,8 @@ class RowMatrix @Since("1.0.0") (
     * @param isGram whether to compute the Gram matrix for matrix
     *               orthonormalization.
     * @param ifTwice whether to compute orthonormalization twice to make
-    *                 the columns of the matrix be orthonormal to nearly the
-    *                 machine precision.
+    *                the columns of the matrix be orthonormal to nearly the
+    *                machine precision.
     * @param iteration number of times to run multiplyDFS if isGram = false.
     * @param rCond the reciprocal condition number. All singular values smaller
     *              than rCond * sigma(0) are treated as zero, where sigma(0) is
@@ -548,7 +548,7 @@ class RowMatrix @Since("1.0.0") (
       if (ifTwice) {
         // Apply computeSVDbyGram twice to A in order to produce the
         // factorization A = U1 * S1 * V1' = U2 * (S2 * V2' * S1 * V1') = U2 * R.
-        // Orthonormalizing twice makes the columns of U3 be orthonormal
+        // Orthonormalizing twice makes the columns of U2 be orthonormal
         // to nearly the machine precision.
         val svdResult1 = computeSVDbyGram(computeU = true)
         val svdResult2 = svdResult1.U.computeSVDbyGram(computeU = true)
@@ -561,7 +561,7 @@ class RowMatrix @Since("1.0.0") (
         val R2 = new BDM[Double](V2.cols, V2.rows)
         for (i <- 0 until V2.cols) R2(i, ::) := (V2(::, i) * svdResult2.s(i)).t
 
-        // Return U3 and R = R3 * R2 * R1.
+        // Return U2 and R = R2 * R1.
         (svdResult2.U, R2 * R1)
       } else {
         // Apply computeSVDbyGram to A and directly return the result.
@@ -608,7 +608,7 @@ class RowMatrix @Since("1.0.0") (
 
     // Determine the effective rank.
     val rConD = if (rCond.isDefined) rCond.get
-      else if (ifTwice & !isGram) 1e-12 else 1e-9
+      else if (!isGram) 1e-12 else 1e-6// else if (ifTwice & !isGram) 1e-12 else 1e-9
     val rank = determineRank(k, s, rConD)
 
     // Truncate S, V.
@@ -653,7 +653,7 @@ class RowMatrix @Since("1.0.0") (
     // Find the effective rank of G.
     val eigenRank = {
       var i = d.length - 1
-      while (i >= 0 && d(i) > 1e-13 * d(d.length - 1)) i = i - 1
+      while (i >= 0 && d(i) > 1e-14 * d(d.length - 1)) i = i - 1
       i + 1
     }
 
