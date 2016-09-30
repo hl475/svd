@@ -502,33 +502,33 @@ class BlockMatrix @Since("1.3.0") (
   }
 
   /**
-    * Computes the randomized singular value decomposition of this BlockMatrix.
-    * Denote this matrix by A (m x n), this will compute matrices U, S, V such
-    * that A ~ U * S * V', where the columns of U are orthonormal, S is a
-    * diagonal matrix with non-negative real numbers on the diagonal, and the
-    * columns of V are orthonormal.
-    *
-    * At most k largest non-zero singular values and associated vectors are
-    * returned. If there are k such values, then the dimensions of the return
-    * will be:
-    *  - U is a RowMatrix of size m x k that satisfies U' * U = eye(k),
-    *  - s is a Vector of size k, holding the singular values in
-    *  descending order,
-    *  - V is a Matrix of size n x k that satisfies V' * V = eye(k).
-    *
-    * @param k number of singular values to keep. We might return less than k
-    *          if there are numerically zero singular values.
-    * @param sc SparkContext, use to generate the random gaussian matrix.
-    * @param computeU whether to compute U.
-    * @param isGram whether to compute the Gram matrix for matrix
-    *               orthonormalization.
-    * @param iteration number of normalized power iterations to conduct.
-    * @param isRandom whether or not fix seed to generate random matrix.
-    * @return SingularValueDecomposition(U, s, V).
-    *
-    * @note if isGram is true, it will lose half or more of the precision
-    * of the arithmetic but could accelerate the computation.
-    */
+   * Computes the randomized singular value decomposition of this BlockMatrix.
+   * Denote this matrix by A (m x n), this will compute matrices U, S, V such
+   * that A ~ U * S * V', where the columns of U are orthonormal, S is a
+   * diagonal matrix with non-negative real numbers on the diagonal, and the
+   * columns of V are orthonormal.
+   *
+   * At most k largest non-zero singular values and associated vectors are
+   * returned. If there are k such values, then the dimensions of the return
+   * will be:
+   *  - U is a RowMatrix of size m x k that satisfies U' * U = eye(k),
+   *  - s is a Vector of size k, holding the singular values in
+   *  descending order,
+   *  - V is a Matrix of size n x k that satisfies V' * V = eye(k).
+   *
+   * @param k number of singular values to keep. We might return less than k
+   *          if there are numerically zero singular values.
+   * @param sc SparkContext, use to generate the random gaussian matrix.
+   * @param computeU whether to compute U.
+   * @param isGram whether to compute the Gram matrix for matrix
+   *               orthonormalization.
+   * @param iteration number of normalized power iterations to conduct.
+   * @param isRandom whether or not fix seed to generate random matrix.
+   * @return SingularValueDecomposition(U, s, V).
+   *
+   * @note if isGram is true, it will lose half or more of the precision
+   * of the arithmetic but could accelerate the computation.
+   */
   @Since("2.0.0")
   def partialSVD(k: Int, sc: SparkContext, computeU: Boolean = false,
                  isGram: Boolean = false, iteration: Int = 2,
@@ -536,19 +536,19 @@ class BlockMatrix @Since("1.3.0") (
   SingularValueDecomposition[BlockMatrix, Matrix] = {
 
     /**
-      * Generate a random [[BlockMatrix]] to compute the singular
-      * value decomposition.
-      *
-      * @param k number of columns in this random [[BlockMatrix]].
-      * @param sc a [[SparkContext]] to generate the random [[BlockMatrix]].
-      * @return a random [[BlockMatrix]].
-      *
-      * @note the generated random [[BlockMatrix]] V has colsPerBlock for the
-      *       number of rows in each block, and rowsPerBlock for the number
-      *       of columns in each block. We will perform matrix multiplication
-      *       with A, i.e., A * V. We want the number of rows in each block
-      *       of V to be same as the number of columns in each block of A.
-      */
+     * Generate a random [[BlockMatrix]] to compute the singular
+     * value decomposition.
+     *
+     * @param k number of columns in this random [[BlockMatrix]].
+     * @param sc a [[SparkContext]] to generate the random [[BlockMatrix]].
+     * @return a random [[BlockMatrix]].
+     *
+     * @note the generated random [[BlockMatrix]] V has colsPerBlock for the
+     *       number of rows in each block, and rowsPerBlock for the number
+     *       of columns in each block. We will perform matrix multiplication
+     *       with A, i.e., A * V. We want the number of rows in each block
+     *       of V to be same as the number of columns in each block of A.
+     */
     def generateRandomMatrices(k: Int, sc: SparkContext): BlockMatrix = {
       val limit = 65535
       if (numCols().toInt < limit) {
@@ -578,22 +578,22 @@ class BlockMatrix @Since("1.3.0") (
     }
 
     /**
-      * Computes the partial singular value decomposition of the[[BlockMatrix]]
-      * A given an [[BlockMatrix]] Q such that A' ~ A' * Q * Q'. The columns
-      * of Q are orthonormal.
-      *
-      * @param Q a [[BlockMatrix]] with orthonormal columns.
-      * @param k number of singular values to compute.
-      * @param computeU whether to compute U.
-      * @param isGram whether to compute the Gram matrix for matrix
-      *               orthonormalization.
-      * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
-      *
-      * @note if isGram is true, it will lose half or more of the precision
-      * of the arithmetic but could accelerate the computation. It will
-      * orthonormalize twice to makes the columns of the matrix be orthonormal
-      * to 15 digits.
-      */
+     * Computes the partial singular value decomposition of the[[BlockMatrix]]
+     * A given an [[BlockMatrix]] Q such that A' ~ A' * Q * Q'. The columns
+     * of Q are orthonormal.
+     *
+     * @param Q a [[BlockMatrix]] with orthonormal columns.
+     * @param k number of singular values to compute.
+     * @param computeU whether to compute U.
+     * @param isGram whether to compute the Gram matrix for matrix
+     *               orthonormalization.
+     * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
+     *
+     * @note if isGram is true, it will lose half or more of the precision
+     * of the arithmetic but could accelerate the computation. It will
+     * orthonormalize twice to makes the columns of the matrix be orthonormal
+     * to 15 digits.
+     */
     def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean, isGram: Boolean):
     SingularValueDecomposition[BlockMatrix, Matrix] = {
       // Compute B = A' * Q.
@@ -652,22 +652,22 @@ class BlockMatrix @Since("1.3.0") (
   }
 
   /**
-    * Orthonormalize the columns of the [[BlockMatrix]] V by using
-    * tallSkinnySVD. We convert V to [[RowMatrix]] first, then apply
-    * tallSkinnySVD. The columns of the result orthonormal matrix are the left
-    * singular vectors of the input matrix V.
-    *
-    * @param sc SparkContext used to create RDDs if isGram = false.
-    * @param isGram whether to compute the Gram matrix when computing
-    *               tallSkinnySVD.
-    * @param ifTwice whether to compute orthonormalization twice to make
-    *                the columns of the matrix be orthonormal to nearly the
-    *                machine precision.
-    * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
-    *
-    * @note if isGram is true, it will lose half or more of the precision
-    * of the arithmetic but could accelerate the computation.
-    */
+   * Orthonormalize the columns of the [[BlockMatrix]] V by using
+   * tallSkinnySVD. We convert V to [[RowMatrix]] first, then apply
+   * tallSkinnySVD. The columns of the result orthonormal matrix are the left
+   * singular vectors of the input matrix V.
+   *
+   * @param sc SparkContext used to create RDDs if isGram = false.
+   * @param isGram whether to compute the Gram matrix when computing
+   *               tallSkinnySVD.
+   * @param ifTwice whether to compute orthonormalization twice to make
+   *                the columns of the matrix be orthonormal to nearly the
+   *                machine precision.
+   * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
+   *
+   * @note if isGram is true, it will lose half or more of the precision
+   * of the arithmetic but could accelerate the computation.
+   */
   @Since("2.0.0")
   def orthonormal(sc: SparkContext = null, isGram: Boolean = false,
                   ifTwice: Boolean = true): BlockMatrix = {
@@ -681,24 +681,24 @@ class BlockMatrix @Since("1.3.0") (
   }
 
   /**
-    * Estimate the largest singular value of [[BlockMatrix]] A using
-    * power method.
-    *
-    * @param iteration number of iterations for power method.
-    * @param sc a [[SparkContext]] generates the normalized
-    *           vector in each iteration.
-    * @return a [[Double]] estimate of the largest singular value.
-    */
+   * Estimate the largest singular value of [[BlockMatrix]] A using
+   * power method.
+   *
+   * @param iteration number of iterations for power method.
+   * @param sc a [[SparkContext]] generates the normalized
+   *           vector in each iteration.
+   * @return a [[Double]] estimate of the largest singular value.
+   */
   @Since("2.0.0")
   def spectralNormEst(iteration: Int = 20, sc: SparkContext): Double = {
     /**
-      * Normalize the [[BlockMatrix]] v which has one column such that it has
-      * unit norm.
-      *
-      * @param v the [[BlockMatrix]] which has one column.
-      * @param sc SparkContext, use to generate the normalized [[BlockMatrix]].
-      * @return a [[BlockMatrix]] such that it has unit norm.
-      */
+     * Normalize the [[BlockMatrix]] v which has one column such that it has
+     * unit norm.
+     *
+     * @param v the [[BlockMatrix]] which has one column.
+     * @param sc SparkContext, use to generate the normalized [[BlockMatrix]].
+     * @return a [[BlockMatrix]] such that it has unit norm.
+     */
     def unit(v : BlockMatrix, sc: SparkContext): BlockMatrix = {
       // v = v / norm(v).
       val temp = Vectors.dense(v.toBreeze().toArray)
