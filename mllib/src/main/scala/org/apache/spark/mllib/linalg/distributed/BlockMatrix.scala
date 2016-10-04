@@ -699,7 +699,7 @@ class BlockMatrix @Since("1.3.0") (
      */
     def unit(v : BlockMatrix, sc: SparkContext): BlockMatrix = {
       // v = v / norm(v).
-      val temp = Vectors.dense(v.toBreeze().toArray)
+      val temp = Vectors.dense(v.toIndexedRowMatrix().toBreeze().toArray)
       val vUnit = temp.asBreeze * (1.0 / Vectors.norm(temp, 2))
 
       // Convert v back to BlockMatrix.
@@ -737,6 +737,6 @@ class BlockMatrix @Since("1.3.0") (
     }
 
     // Calculate the 2-norm of final v.
-    Vectors.norm(Vectors.dense(v.toBreeze().toArray), 2)
+    Vectors.norm(Vectors.dense(v.toIndexedRowMatrix().toBreeze().toArray), 2)
   }
 }
