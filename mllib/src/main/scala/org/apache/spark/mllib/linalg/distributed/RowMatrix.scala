@@ -1109,6 +1109,10 @@ class RowMatrix @Since("1.0.0") (
     new CoordinateMatrix(sims, numCols(), numCols())
   }
 
+  /**
+   * Convert distributed storage of RowMatrix into locally stored BDM, whereas
+   * asBreeze works on matrices stored locally and requires no memcopy.
+   */
   private[mllib] override def toBreeze(): BDM[Double] = {
     val m = numRows().toInt
     val n = numCols().toInt

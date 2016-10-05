@@ -5,8 +5,7 @@
 package org.apache.spark.mllib.linalg.distributed
 
 import breeze.linalg.{max, DenseMatrix => BDM, DenseVector => BDV}
-import breeze.numerics.abs
-
+import breeze.numerics.{abs, ceil}
 import org.apache.spark.{SparkContext, SparkFunSuite}
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.util.MLlibTestSparkContext
@@ -241,16 +240,35 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
   }
 
   def generateDCT(m: Int, k: Int, sc: SparkContext): BlockMatrix = {
+    val limit = 65535
     val pi = 4 * math.atan(1)
-    val data = Seq.tabulate(m)(n =>
-      (n.toLong, Vectors.dense(Array.tabulate(k)
-      { j => math.sqrt(2.0/m) * math.cos(
-        pi/m * (n + .5) * (j + .5)) })))
-      .map(x => IndexedRow(x._1, x._2))
+    if (m < limit) {
+      val data = Seq.tabulate(m)(n =>
+        (n.toLong, Vectors.dense(Array.tabulate(k) { j =>
+          math.sqrt(2.0 / m) * math.cos(pi / m * (n + .5) * (j + .5))
+        })))
+        .map(x => IndexedRow(x._1, x._2))
 
-    val indexedRows: RDD[IndexedRow] = sc.parallelize(data, numPartitions)
-    val mat = new IndexedRowMatrix(indexedRows)
-    mat.toBlockMatrix(rowPerPart, colPerPart)
+      val indexedRows: RDD[IndexedRow] = sc.parallelize(data, numPartitions)
+      val mat = new IndexedRowMatrix(indexedRows)
+      mat.toBlockMatrix(rowPerPart, colPerPart)
+    } else {
+      // Generate a m-by-k BlockMatrix: we first generate a sequence of
+      // RDD[Vector] where each RDD[Vector] contains either 65535 rows or
+      // m mod 65535 rows. The number of elements in the sequence is
+      // ceiling(n/65535).
+      val num = ceil(m.toFloat/limit).toInt
+      val rddsBlock = Seq.tabulate(num)(z =>
+        sc.parallelize(Seq.tabulate(if (z < m/limit) limit
+        else m.toInt%limit)(n => (z.toLong * limit + n,
+          Vectors.dense(Array.tabulate(k) { j =>
+            math.sqrt(2.0 / m) * math.cos(pi / m * (z.toLong * limit + n + .5)
+              * (j + .5))})))
+          .map(x => IndexedRow(x._1, x._2)), numPartitions))
+      val rddBlockSeq = sc.union(rddsBlock)
+      new IndexedRowMatrix(rddBlockSeq).
+        toBlockMatrix(rowPerPart, colPerPart)
+    }
   }
 
   def generateS(k: Int, caseNum: Int): Array[Double] = {
