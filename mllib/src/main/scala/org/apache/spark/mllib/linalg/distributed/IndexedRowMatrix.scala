@@ -196,6 +196,10 @@ class IndexedRowMatrix @Since("1.0.0") (
     toRowMatrix().computeGramianMatrix()
   }
 
+  /**
+   * Convert distributed storage of IndexedRowMatrix into locally stored BDM, whereas
+   * asBreeze works on matrices stored locally and requires no memcopy.
+   */
   private[mllib] override def toBreeze(): BDM[Double] = {
     val m = numRows().toInt
     val n = numCols().toInt
