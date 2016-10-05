@@ -22,7 +22,7 @@ import scala.util.Random
 
 import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, Matrix => BM,
 SparseVector => BSV, Vector => BV}
-import breeze.numerics._
+import breeze.numerics.ceil
 
 import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
@@ -338,7 +338,10 @@ class BlockMatrix @Since("1.3.0") (
     new BlockMatrix(transposedBlocks, colsPerBlock, rowsPerBlock, nCols, nRows)
   }
 
-  /** Collects data and assembles a local dense breeze matrix (for test only). */
+  /**
+   * Convert distributed storage of BlockMatrix into locally stored BDM, whereas
+   * asBreeze works on matrices stored locally and requires no memcopy.
+   */
   private[mllib] def toBreeze(): BDM[Double] = {
     val localMat = toLocalMatrix()
     new BDM[Double](localMat.numRows, localMat.numCols, localMat.toArray)
@@ -701,7 +704,7 @@ class BlockMatrix @Since("1.3.0") (
      */
     def unit(v : BlockMatrix, sc: SparkContext): BlockMatrix = {
       // v = v / norm(v).
-      val temp = Vectors.dense(v.toIndexedRowMatrix().toBreeze().toArray)
+      val temp = Vectors.dense(v.toBreeze().toArray)
       val vUnit = temp.asBreeze * (1.0 / Vectors.norm(temp, 2))
 
       // Convert v back to BlockMatrix.
@@ -739,6 +742,6 @@ class BlockMatrix @Since("1.3.0") (
     }
 
     // Calculate the 2-norm of final v.
-    Vectors.norm(Vectors.dense(v.toIndexedRowMatrix().toBreeze().toArray), 2)
+    Vectors.norm(Vectors.dense(v.toBreeze().toArray), 2)
   }
 }
