@@ -1,25 +1,37 @@
-/*
- * Created by huaminli on 7/21/16.
- */
+// scalastyle:off
 
-package org.apache.spark.mllib.linalg.distributed
+package org.apache.spark.examples.mllib
 
-import breeze.linalg.{max, DenseMatrix => BDM, DenseVector => BDV}
-import breeze.numerics.{abs, ceil}
-
-import org.apache.spark.{SparkContext, SparkFunSuite}
-import org.apache.spark.mllib.linalg._
-import org.apache.spark.mllib.util.MLlibTestSparkContext
-import org.apache.spark.mllib.util.TestingUtils._
+import Math.abs
+import breeze.linalg.{max, min, DenseMatrix => BDM, DenseVector => BDV}
+import breeze.numerics._
+import org.apache.log4j.{Level, Logger}
+import org.apache.spark.mllib.linalg.distributed.{BlockMatrix, IndexedRow, IndexedRowMatrix, RowMatrix}
+import org.apache.spark.mllib.linalg.{DenseMatrix, Matrices, Matrix, Vector, Vectors}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.{SparkConf, SparkContext}
 
-// scalastyle:off println
-class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkContext{
+object Li {
   val rowPerPart = 20
   val colPerPart = 30
   val numPartitions = 30
 
-  test("Test SVD") {
+  def main(args: Array[String]) {
+    val conf = new SparkConf().setAppName("SparkGrep").setMaster("local[*]")
+    val sc = new SparkContext(conf)
+    val rootLogger = Logger.getRootLogger()
+    rootLogger.setLevel(Level.ERROR)
+
+    testSVD(sc)
+    testComb(sc)
+    println("--------------------------------" +
+      "--------------------------------")
+    println("All tests passed")
+
+    System.exit(0)
+  }
+
+  def testSVD(sc: SparkContext): Unit = {
     val numRows = Seq(100, 200, 500, 1000)
     val numCols = Seq(50, 100, 200, 500)
     val k = Seq(10, 20, 30, 50)
@@ -50,14 +62,14 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("--------------------------------" +
         "--------------------------------")
       println("Test tallSkinnySVD")
-      val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A._1, A._2, k(i),
+      val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A._1, A._2, k(i), sc,
         computeU, isGram(i), ifTwice(i), iterSpectralNorm)
       // test computeSVD
       println("--------------------------------" +
-        "--------------------------------")
+      "--------------------------------")
       println("Test computeSVD")
-      val (ratio3, maxU3, maxV3) = computeSVDSuite(A._1, A._2, k(i), computeU,
-        iterSpectralNorm)
+      val (ratio3, maxU3, maxV3) = computeSVDSuite(A._1, A._2, k(i), sc,
+        computeU, iterSpectralNorm)
       println("--------------------------------" +
         "--------------------------------")
       println("Result: ratio of spectral norm between diff and input")
@@ -72,25 +84,23 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("computeSVD: " + maxU2 + ", " + maxV2)
 
       val gramTol = if (isGram(i)) 5E-6 else 5E-13
-      assert(ratio1 ~== 0.0 absTol gramTol)
-      assert(ratio2 ~== 0.0 absTol gramTol)
-      // assert(ratio3 ~== 0.0 absTol gramTol)
+      assert(abs(ratio1) <= gramTol)
+      assert(abs(ratio2) <= gramTol)
 
       val orthoTol = if (ifTwice(i)) 5E-13 else 5E-6
-      assert(maxU1 ~== 0.0 absTol orthoTol)
-      assert(maxV1 ~== 0.0 absTol orthoTol)
-      assert(maxU2 ~== 0.0 absTol orthoTol)
-      assert(maxV2 ~== 0.0 absTol orthoTol)
-      // assert(maxU3 ~== 0.0 absTol orthoTol)
-      // assert(maxV3 ~== 0.0 absTol orthoTol)
+      assert(abs(maxU1) <= orthoTol)
+      assert(abs(maxV1) <= orthoTol)
+      assert(abs(maxU2) <= orthoTol)
+      assert(abs(maxV2) <= orthoTol)
+
       println("Test passed")
       println("--------------------------------" +
         "--------------------------------")
     }
-    println("All tests passed")
+    println("All tests about reconstruction passed")
   }
 
-  test("Test combinations of isGram and ifTwice") {
+  def testComb(sc: SparkContext): Unit = {
     val numRows = 400
     val numCols = 300
     val k = 25
@@ -120,7 +130,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("--------------------------------" +
         "--------------------------------")
       println("Test tallSkinnySVD")
-      val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A._1, A._2, k,
+      val (ratio2, maxU2, maxV2) = tallSkinnySVDSuite(A._1, A._2, k, sc,
         computeU, isGram(i), ifTwice(i), iterSpectralNorm)
       // test computeSVD
       println("--------------------------------" +
@@ -135,90 +145,57 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       println("tallSkinnySVD: " + maxU2 + ", " + maxV2)
 
       val gramTol = if (isGram(i)) 5E-6 else 5E-11
-      assert(ratio1 ~== 0.0 absTol gramTol)
-      assert(ratio2 ~== 0.0 absTol gramTol)
+      assert(abs(ratio1) <= gramTol)
+      assert(abs(ratio2) <= gramTol)
 
       val orthoTol = if (ifTwice(i)) 5E-13 else 5E-4
-      assert(maxU1 ~== 0.0 absTol orthoTol)
-      assert(maxV1 ~== 0.0 absTol orthoTol)
-      assert(maxU2 ~== 0.0 absTol orthoTol)
-      assert(maxV2 ~== 0.0 absTol orthoTol)
+      assert(abs(maxU1) <= orthoTol)
+      assert(abs(maxV1) <= orthoTol)
+      assert(abs(maxU2) <= orthoTol)
+      assert(abs(maxV2) <= orthoTol)
       println("Test passed")
       println("--------------------------------" +
         "--------------------------------")
     }
-    println("All tests passed")
+    println("All tests about combinations of isGram and ifTwice passed")
   }
 
   def partialSVDSuite(A: BlockMatrix, sigma: Double, k: Int, sc: SparkContext,
                       computeU: Boolean, isGram: Boolean, iter1: Int, iter2: Int,
                       isRandom: Boolean): (Double, Double, Double) = {
     println("Compute partialSVD")
-    val svdResult = time {A.partialSVD(k, sc, computeU, isGram, iter1, isRandom)}
+    val svd = time {A.partialSVD(k, sc, computeU, isGram, iter1, isRandom)}
+    val indices = svd.U.toIndexedRowMatrix().rows.map(_.index)
 
-    val U = svdResult.U.toIndexedRowMatrix()
-    val S = svdResult.s
-    val V = svdResult.V
-    val numk = S.toArray.length
-    val VDenseMat = new DenseMatrix(A.numCols().toInt, numk, V.toArray)
-    val SVT = Matrices.diag(S).multiply(VDenseMat.transpose).toArray
-    val SVTMat = Matrices.dense(numk, A.numCols().toInt, SVT)
-    val USVT = U.multiply(SVTMat)
-    val diff = A.subtract(USVT.toBlockMatrix(rowPerPart, rowPerPart))
-
-    val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
-    val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
-    val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
-    val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
-
-    println("Estimate the spectral norm of input and reconstruction")
-    val snormDiff = time {diff.spectralNormEst(iter2, sc)}
-    val ratio = if (sigma != 0.0) snormDiff / sigma else 0.0
-    (ratio, maxU, maxV)
+    computeStatistics(A, svd.U.toIndexedRowMatrix().toRowMatrix(), svd.s,
+      svd.V, indices, iter2, sc, sigma)
   }
 
-  def tallSkinnySVDSuite(A: BlockMatrix, sigma: Double, k: Int, computeU: Boolean,
-                         isGram: Boolean, ifTwice: Boolean, iter: Int):
-  (Double, Double, Double) = {
+  def tallSkinnySVDSuite(A: BlockMatrix, sigma: Double, k: Int, sc: SparkContext,
+                         computeU: Boolean, isGram: Boolean, ifTwice: Boolean,
+    iter: Int): (Double, Double, Double) = {
     val indices = A.toIndexedRowMatrix().rows.map(_.index)
     val B = A.toIndexedRowMatrix().toRowMatrix()
     println("Compute tallSkinnySVD")
     val svd = time {B.tallSkinnySVD(k, sc, computeU, isGram, ifTwice)}
 
-    val U = svd.U // RowMatrix
-    val S = svd.s // Vector
-    val V = svd.V // Matrix
-    val numk = S.toArray.length
-    val VDenseMat = new DenseMatrix(A.numCols().toInt, numk, V.toArray)
-    val SVT = Matrices.diag(S).multiply(VDenseMat.transpose).toArray
-    val SVTMat = Matrices.dense(numk, A.numCols().toInt, SVT)
-    val USVT = U.multiply(SVTMat)
-    val indexedRows = indices.zip(USVT.rows).map { case (i, v) =>
-      IndexedRow(i, v)}
-    val USVTIndexedRowMat = new IndexedRowMatrix(indexedRows)
-    val diff = A.subtract(USVTIndexedRowMat.toBlockMatrix(rowPerPart, rowPerPart))
-
-    val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
-    val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
-    val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
-    val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
-
-    println("Estimate the spectral norm of input and reconstruction")
-    val snormDiff = time {diff.spectralNormEst(iter, sc)}
-    val ratio = if (sigma != 0.0) snormDiff / sigma else 0.0
-    (ratio, maxU, maxV)
+    computeStatistics(A, svd.U, svd.s, svd.V, indices, iter, sc, sigma)
   }
 
-  def computeSVDSuite(A: BlockMatrix, sigma: Double, k: Int, computeU: Boolean,
-                      iter: Int): (Double, Double, Double) = {
+  def computeSVDSuite(A: BlockMatrix, sigma: Double, k: Int, sc: SparkContext,
+                      computeU: Boolean, iter: Int):
+  (Double, Double, Double) = {
     val indices = A.toIndexedRowMatrix().rows.map(_.index)
     val B = A.toIndexedRowMatrix().toRowMatrix()
     println("Compute computeSVD")
     val svd = time {B.computeSVD(k, computeU)}
 
-    val U = svd.U // RowMatrix
-    val S = svd.s // Vector
-    val V = svd.V // Matrix
+    computeStatistics(A, svd.U, svd.s, svd.V, indices, iter, sc, sigma)
+  }
+
+  def computeStatistics(A: BlockMatrix, U: RowMatrix, S: Vector, V: Matrix,
+                        indices: RDD[Long], iter2: Int, sc: SparkContext,
+                        sigma: Double): (Double, Double, Double) = {
     val numk = S.toArray.length
     val VDenseMat = new DenseMatrix(A.numCols().toInt, numk, V.toArray)
     val SVT = Matrices.diag(S).multiply(VDenseMat.transpose).toArray
@@ -229,13 +206,19 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     val USVTIndexedRowMat = new IndexedRowMatrix(indexedRows)
     val diff = A.subtract(USVTIndexedRowMat.toBlockMatrix(rowPerPart, rowPerPart))
 
-    val gramU = U.computeGramianMatrix().asBreeze.toDenseMatrix
-    val maxU = max(abs((gramU - BDM.eye[Double](gramU.rows)).toDenseVector))
-    val gramV = VDenseMat.transpose.multiply(VDenseMat).asBreeze.toDenseMatrix
-    val maxV = max(abs((gramV - BDM.eye[Double](gramV.rows)).toDenseVector))
+    val gramUMat = U.computeGramianMatrix()
+    val gramU = new BDM[Double](gramUMat.numRows, gramUMat.numCols,
+      gramUMat.toArray)
+    val UoffDiagArr = new BDV((gramU - BDM.eye[Double](gramU.rows)).toArray)
+    val maxU = math.max(max(UoffDiagArr), math.abs(min(UoffDiagArr)))
+    val gramVMat = VDenseMat.transpose.multiply(VDenseMat)
+    val gramV = new BDM[Double](gramVMat.numRows, gramVMat.numCols,
+      gramVMat.toArray)
+    val VoffDiagArr = new BDV((gramV - BDM.eye[Double](gramV.rows)).toArray)
+    val maxV = math.max(max(VoffDiagArr), math.abs(min(VoffDiagArr)))
 
     println("Estimate the spectral norm of input and reconstruction")
-    val snormDiff = time {diff.spectralNormEst(iter, sc)}
+    val snormDiff = time {diff.spectralNormEst(iter2, sc)}
     val ratio = if (sigma != 0.0) snormDiff / sigma else 0.0
     (ratio, maxU, maxV)
   }
@@ -309,6 +292,7 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
       toBlockMatrix(rowPerPart, colPerPart).transpose
     (U.multiply(SVT), S.toArray.max)
   }
+
   def time[R](block: => R): R = {
     val t0 = System.nanoTime()
     val result = block
@@ -317,5 +301,5 @@ class partialSVDandTallSkinnySVDSuite extends SparkFunSuite with MLlibTestSparkC
     result
   }
 }
-// scalastyle:on println
 
+// scalastyle:on
