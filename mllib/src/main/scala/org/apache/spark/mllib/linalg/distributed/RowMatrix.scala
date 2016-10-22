@@ -957,11 +957,12 @@ class RowMatrix @Since("1.0.0") (
     RowMatrix = {
       val m = rows.count()
       val n = R.cols
-      val Bb = rows.context.broadcast(R.toArray)
+      val dim = math.min(m.toInt, n)
+      val Bb = rows.context.broadcast(R(0 until dim, 0 until dim).toArray)
 
       val AB = rows.mapPartitions { iter =>
         val LHS = Bb.value
-        val LHSMat = Matrices.dense(n, n, LHS).asBreeze
+        val LHSMat = Matrices.dense(dim, dim, LHS).asBreeze
         val FNorm = Vectors.norm(Vectors.dense(LHS), 2.0)
         iter.map { row =>
           val RHS = row.asBreeze.toArray
@@ -969,7 +970,7 @@ class RowMatrix @Since("1.0.0") (
           // We don't use LAPACK here since it will be numerically unstable if
           // R is singular. If R is singular, we set the corresponding
           // column of Q to 0.
-          for ( i <- 0 until n) {
+          for ( i <- 0 until dim) {
             if (math.abs(LHSMat(i, i)) > 1.0e-15 * FNorm) {
               var sum = 0.0
               for ( j <- 0 until i) {
@@ -983,7 +984,7 @@ class RowMatrix @Since("1.0.0") (
           Vectors.fromBreeze(v)
         }
       }
-      new RowMatrix(AB, m, n)
+      new RowMatrix(AB, m, dim)
     }
 
     val col = numCols().toInt
