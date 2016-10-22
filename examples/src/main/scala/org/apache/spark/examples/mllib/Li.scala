@@ -28,6 +28,7 @@ object Li {
       "--------------------------------")
     println("All tests passed")
 
+    sc.stop()
     System.exit(0)
   }
 
