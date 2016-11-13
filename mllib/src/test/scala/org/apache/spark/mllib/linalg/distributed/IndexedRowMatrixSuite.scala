@@ -17,7 +17,9 @@
 
 package org.apache.spark.mllib.linalg.distributed
 
-import breeze.linalg.{diag => brzDiag, DenseMatrix => BDM, DenseVector => BDV}
+import breeze.linalg.{diag => brzDiag, norm => brzNorm, svd => brzSvd,
+  DenseMatrix => BDM, DenseVector => BDV}
+import breeze.numerics._
 
 import org.apache.spark.SparkFunSuite
 import org.apache.spark.mllib.linalg.{Matrices, Vectors}
@@ -112,6 +114,21 @@ class IndexedRowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
     assert(localC === expected)
   }
 
+  test("QR Decomposition") {
+    val A = new IndexedRowMatrix(indexedRows)
+    val result = A.tallSkinnyQR(true)
+    val expected = breeze.linalg.qr.reduced(A.toBreeze())
+    val calcQ = result.Q
+    val calcR = result.R
+    assert(closeToZero(abs(expected.q) - abs(calcQ.toBreeze())))
+    assert(closeToZero(abs(expected.r) - abs(calcR.asBreeze.asInstanceOf[BDM[Double]])))
+    assert(closeToZero(calcQ.multiply(calcR).toBreeze - A.toBreeze()))
+    // Decomposition without computing Q
+    val rOnly = A.tallSkinnyQR(computeQ = false)
+    assert(rOnly.Q == null)
+    assert(closeToZero(abs(expected.r) - abs(rOnly.R.asBreeze.asInstanceOf[BDM[Double]])))
+  }
+
   test("gram") {
     val A = new IndexedRowMatrix(indexedRows)
     val G = A.computeGramianMatrix()
@@ -153,6 +170,57 @@ class IndexedRowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
     }
   }
 
+  test("tallSkinnySVD") {
+    val mat = new IndexedRowMatrix(indexedRows)
+    val localMat = mat.toBreeze()
+    val brzSvd.SVD(localU, localSigma, localVt) = brzSvd(localMat)
+    val localV: BDM[Double] = localVt.t.toDenseMatrix
+    val k = 2
+    val svd = mat.tallSkinnySVD(k, sc, computeU = true)
+    val U = svd.U
+    val s = svd.s
+    val V = svd.V
+    assert(U.numRows() === m)
+    assert(U.numCols() === k)
+    assert(s.size === k)
+    assert(V.numRows === n)
+    assert(V.numCols === k)
+    assertColumnEqualUpToSign(U.toBreeze(), localU, k)
+    assertColumnEqualUpToSign(V.asBreeze.asInstanceOf[BDM[Double]], localV, k)
+    assert(closeToZero(s.asBreeze.asInstanceOf[BDV[Double]] -
+      localSigma(0 until k)))
+
+    val svdWithoutU = mat.tallSkinnySVD(k, sc, computeU = false)
+    assert(svdWithoutU.U === null)
+
+    intercept[IllegalArgumentException] {
+      mat.tallSkinnySVD(k = -1, sc)
+    }
+  }
+
+  test("computeSVDbyGram") {
+    val mat = new IndexedRowMatrix(indexedRows)
+    val localMat = mat.toBreeze()
+    val brzSvd.SVD(localU, localSigma, localVt) = brzSvd(localMat)
+    val localV: BDM[Double] = localVt.t.toDenseMatrix
+    val svd = mat.computeSVDbyGram(computeU = true)
+    val U = svd.U
+    val s = svd.s
+    val V = svd.V
+    assert(U.numRows() === m)
+    assert(U.numCols() === n)
+    assert(s.size === n)
+    assert(V.numRows === n)
+    assert(V.numCols === n)
+    assertColumnEqualUpToSign(U.toBreeze(), localU, n)
+    assertColumnEqualUpToSign(V.asBreeze.asInstanceOf[BDM[Double]], localV, n)
+    assert(closeToZero(s.asBreeze.asInstanceOf[BDV[Double]] -
+      localSigma(0 until n)))
+
+    val svdWithoutU = mat.computeSVDbyGram(computeU = false)
+    assert(svdWithoutU.U === null)
+  }
+
   test("similar columns") {
     val A = new IndexedRowMatrix(indexedRows)
     val gram = A.computeGramianMatrix().asBreeze.toDenseMatrix
@@ -167,6 +235,20 @@ class IndexedRowMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
 
   def closeToZero(G: BDM[Double]): Boolean = {
     G.valuesIterator.map(math.abs).sum < 1e-6
+  }
+
+  def closeToZero(v: BDV[Double]): Boolean = {
+    brzNorm(v, 1.0) < 1e-6
+  }
+
+  def assertColumnEqualUpToSign(A: BDM[Double], B: BDM[Double], k: Int) {
+    assert(A.rows === B.rows)
+    for (j <- 0 until k) {
+      val aj = A(::, j)
+      val bj = B(::, j)
+      assert(closeToZero(aj - bj) || closeToZero(aj + bj),
+        s"The $j-th columns mismatch: $aj and $bj")
+    }
   }
 }
 

@@ -601,16 +601,11 @@ class BlockMatrix @Since("1.3.0") (
       val B = transpose.multiply(Q)
 
       // Find SVD of B such that B = V * S * X'.
-      val indices = B.toIndexedRowMatrix().rows.map(_.index)
-      val svdResult = B.toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(
+      val svdResult = B.toIndexedRowMatrix().tallSkinnySVD(
         Math.min(k, B.nCols.toInt), sc, computeU = true, isGram, ifTwice = true)
 
       // Convert V's type.
-      val indexedRows = indices.zip(svdResult.U.rows).map { case (i, v) =>
-        IndexedRow(i, v) }
-      val VMat = new IndexedRowMatrix(indexedRows, B.numRows().toInt,
-        svdResult.s.size)
-      val V = Matrices.fromBreeze(VMat.toBreeze())
+      val V = Matrices.fromBreeze(svdResult.U.toBreeze())
 
       // Compute U amd return svd of A.
       if (computeU) {
@@ -673,12 +668,10 @@ class BlockMatrix @Since("1.3.0") (
   def orthonormal(sc: SparkContext = null, isGram: Boolean = false,
                   ifTwice: Boolean = true): BlockMatrix = {
     // Orthonormalize the columns of the input BlockMatrix.
-    val indices = toIndexedRowMatrix().rows.map(_.index)
-    val Q = toIndexedRowMatrix().toRowMatrix().tallSkinnySVD(nCols.toInt,
-        sc, computeU = true, isGram, ifTwice).U
-    val indexedRows = indices.zip(Q.rows).map { case (i, v) =>
-      IndexedRow(i, v)}
-    new IndexedRowMatrix(indexedRows).toBlockMatrix(rowsPerBlock, colsPerBlock)
+    val Q = toIndexedRowMatrix().tallSkinnySVD(nCols.toInt,
+      sc, computeU = true, isGram, ifTwice).U
+    Q.toBlockMatrix(rowsPerBlock, colsPerBlock)
+
   }
 
   /**
