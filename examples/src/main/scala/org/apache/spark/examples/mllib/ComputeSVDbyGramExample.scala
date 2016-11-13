@@ -28,7 +28,7 @@ import org.apache.spark.mllib.linalg.Vector
 import org.apache.spark.mllib.linalg.Vectors
 // $example off$
 
-object TallSkinnySVDExample {
+object ComputeSVDbyGramExample {
 
   def main(args: Array[String]): Unit = {
 
@@ -46,9 +46,9 @@ object TallSkinnySVDExample {
 
     val mat = new IndexedRowMatrix(indexedRows)
 
-    // Compute the top 3 singular values and corresponding singular vectors.
+    // Compute the singular value decompositions of mat.
     val svd: SingularValueDecomposition[IndexedRowMatrix, Matrix] =
-      mat.tallSkinnySVD(3, sc, computeU = true)
+    mat.computeSVDbyGram(computeU = true)
     val U: IndexedRowMatrix = svd.U  // The U factor is a RowMatrix.
     val s: Vector = svd.s  // The singular values are stored in a local dense vector.
     val V: Matrix = svd.V  // The V factor is a local dense matrix.
