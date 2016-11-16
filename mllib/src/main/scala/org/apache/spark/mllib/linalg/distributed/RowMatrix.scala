@@ -173,8 +173,8 @@ class RowMatrix @Since("1.0.0") (
    *       subject to change.
    * @note Only the singular values and right singular vectors (not the left
    *       singular vectors) that computeSVD computes are meaningful when
-   *       using multiple executors/machines. IndexedRowMatrix provides
-   *       analogous computeSVD function that compute a meaningful left
+   *       using multiple executors/machines. IndexedRowMatrix provides an
+   *       analogous computeSVD function that computes meaningful left
    *       singular vectors.
    *
    * @param k number of leading singular values to keep (0 &lt; k &lt;= n).
@@ -533,8 +533,8 @@ class RowMatrix @Since("1.0.0") (
    *  architectures"  ([[http://dx.doi.org/10.1145/1996092.1996103]])
    *
    * @note Only the R (not the Q) in the QR decomposition is meaningful when
-   *       using multiple executors/machines. IndexedRowMatrix provides
-   *       analogous tallSkinnyQR function that compute a meaningful Q in a QR
+   *       using multiple executors/machines. IndexedRowMatrix provides an
+   *       analogous tallSkinnyQR function that computes a meaningful Q in a QR
    *       decomposition.
    *
    * @param computeQ whether to computeQ
