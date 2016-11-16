@@ -171,6 +171,11 @@ class RowMatrix @Since("1.0.0") (
    *
    * @note The conditions that decide which method to use internally and the default parameters are
    *       subject to change.
+   * @note Only the singular values and right singular vectors (not the left
+   *       singular vectors) that computeSVD computes are meaningful when
+   *       using multiple executors/machines. IndexedRowMatrix provides
+   *       analogous computeSVD function that compute a meaningful left
+   *       singular vectors.
    *
    * @param k number of leading singular values to keep (0 &lt; k &lt;= n).
    *          It might return less than k if
@@ -526,6 +531,11 @@ class RowMatrix @Since("1.0.0") (
    * Reference:
    *  Paul G. Constantine, David F. Gleich. "Tall and skinny QR factorizations in MapReduce
    *  architectures"  ([[http://dx.doi.org/10.1145/1996092.1996103]])
+   *
+   * @note Only the R (not the Q) in the QR decomposition is meaningful when
+   *       using multiple executors/machines. IndexedRowMatrix provides
+   *       analogous tallSkinnyQR function that compute a meaningful Q in a QR
+   *       decomposition.
    *
    * @param computeQ whether to computeQ
    * @return QRDecomposition(Q, R), Q = null if computeQ = false.

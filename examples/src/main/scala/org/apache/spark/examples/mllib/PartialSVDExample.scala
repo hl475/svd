@@ -47,7 +47,7 @@ object PartialSVDExample {
 
     // Compute the top 4 singular values and corresponding singular vectors.
     val svd: SingularValueDecomposition[BlockMatrix, Matrix] =
-    mat.partialSVD(4, sc, computeU = true)
+      mat.partialSVD(4, sc, computeU = true)
     val U: BlockMatrix = svd.U  // The U factor is a RowMatrix.
     val s: Vector = svd.s  // The singular values are stored in a local dense vector.
     val V: Matrix = svd.V  // The V factor is a local dense matrix.
