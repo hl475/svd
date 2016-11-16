@@ -173,7 +173,7 @@ class IndexedRowMatrix @Since("1.0.0") (
   /**
    * Computes singular value decomposition of this matrix. Denote this matrix
    * by A (m x n). This will compute matrices U, S, V such that
-   * A ~= U * S * V', where S contains the leading k singular values, U and V
+   * A ~ U * S * V', where S contains the leading k singular values, U and V
    * contain the corresponding singular vectors.
    *
    * At most k largest non-zero singular values and associated vectors are
@@ -323,7 +323,19 @@ class IndexedRowMatrix @Since("1.0.0") (
     val sigmas: BDV[Double] = brzSqrt(sigmaSquares)
 
     // Determine the effective rank.
-    val sk = determineRank(k, sigmas, rCond)
+    val sigma0 = sigmas(0)
+    val threshold = rCond * sigma0
+    var i = 0
+    // sigmas might have a length smaller than k, if some Ritz values do not satisfy the convergence
+    // criterion specified by tol after max number of iterations.
+    // Thus use i < min(k, sigmas.length) instead of i < k.
+    if (sigmas.length < k) {
+      logWarning(s"Requested $k singular values but only found ${sigmas.length} converged.")
+    }
+    while (i < math.min(k, sigmas.length) && sigmas(i) >= threshold) {
+      i += 1
+    }
+    val sk = i
 
     // Warn at the end of the run as well, for increased visibility.
     if (computeMode == SVDMode.DistARPACK && rows.getStorageLevel ==
@@ -449,8 +461,7 @@ class IndexedRowMatrix @Since("1.0.0") (
     }
 
     val col = numCols().toInt
-    // split rows horizontally into smaller matrices, and compute QR for each
-    // of them.
+    // partition into blocks of rows, and compute QR for each of them.
     val blockQRs = rows.retag(classOf[IndexedRow]).glom().
       filter(_.length != 0).map { partRows =>
       val bdm = BDM.zeros[Double](partRows.length, col)
@@ -621,8 +632,13 @@ class IndexedRowMatrix @Since("1.0.0") (
 
     // Determine the effective rank.
     val rConD = if (rCond.isDefined) rCond.get
-    else if (!isGram) 1e-12 else 1e-6
-    val rank = determineRank(k, s, rConD)
+    else if (!isGram) 1e-11 else 1e-6
+
+    val threshold = rConD * s(0)
+    var rank = 0
+    while (rank < math.min(k, s.length) && s(rank) >= threshold) {
+      rank += 1
+    }
 
     // Truncate S, V.
     val sk = Vectors.fromBreeze(s(0 until rank))
@@ -639,38 +655,6 @@ class IndexedRowMatrix @Since("1.0.0") (
     } else {
       SingularValueDecomposition(null, sk, VMat)
     }
-  }
-
-  /**
-   * Determine the effective rank.
-   *
-   * @param k number of singular values to keep. We might return less than k if
-   *          there are numerically zero singular values. See rCond.
-   * @param sigmas singular values of matrix
-   * @param rCond the reciprocal condition number. All singular values smaller
-   *              than rCond * sigma(0) are treated as zero, where sigma(0) is
-   *              the largest singular value.
-   * @return a [[Int]]
-   */
-  def determineRank(k: Int, sigmas: BDV[Double], rCond: Double): Int = {
-    // Determine the effective rank.
-    val sigma0 = sigmas(0)
-    val threshold = rCond * sigma0
-    var i = 0
-    // sigmas might have a length smaller than k, if some Ritz values do not
-    // satisfy the convergence criterion specified by tol after max number of
-    // iterations. Thus use i < min(k, sigmas.length) instead of i < k.
-    if (sigmas.length < k) {
-      logWarning(s"Requested $k singular values but only found" +
-        s"${sigmas.length}converged.")
-    }
-    while (i < math.min(k, sigmas.length) && sigmas(i) >= threshold) {
-      i += 1
-    }
-    if (i < k) {
-      logWarning(s"Requested $k singular values but only found $i nonzeros.")
-    }
-    i
   }
 
   /**

@@ -49,7 +49,6 @@ class BlockMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
   }
 
   test("size") {
-    println(gridBasedMat.toLocalMatrix())
     assert(gridBasedMat.numRows() === m)
     assert(gridBasedMat.numCols() === n)
   }
