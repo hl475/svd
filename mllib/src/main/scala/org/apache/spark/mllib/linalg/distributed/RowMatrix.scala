@@ -107,8 +107,9 @@ class RowMatrix @Since("1.0.0") (
   }
 
   /**
-   * Computes the Gramian matrix `A^T A`. Note that this cannot be computed on matrices with
-   * more than 65535 columns.
+   * Computes the Gramian matrix `A^T A`.
+   *
+   * @note This cannot be computed on matrices with more than 65535 columns.
    */
   @Since("1.0.0")
   def computeGramianMatrix(): Matrix = {
@@ -169,14 +170,6 @@ class RowMatrix @Since("1.0.0") (
    * ARPACK is set to 300 or k * 3, whichever is larger. The numerical tolerance for ARPACK's
    * eigen-decomposition is set to 1e-10.
    *
-   * @note The conditions that decide which method to use internally and the default parameters are
-   *       subject to change.
-   * @note Only the singular values and right singular vectors (not the left
-   *       singular vectors) that computeSVD computes are meaningful when
-   *       using multiple executors/machines. IndexedRowMatrix provides an
-   *       analogous computeSVD function that computes meaningful left
-   *       singular vectors.
-   *
    * @param k number of leading singular values to keep (0 &lt; k &lt;= n).
    *          It might return less than k if
    *          there are numerically zero singular values or there are not enough Ritz values
@@ -186,6 +179,14 @@ class RowMatrix @Since("1.0.0") (
    * @param rCond the reciprocal condition number. All singular values smaller than rCond * sigma(0)
    *              are treated as zero, where sigma(0) is the largest singular value.
    * @return SingularValueDecomposition(U, s, V). U = null if computeU = false.
+   *
+   * @note The conditions that decide which method to use internally and the default parameters are
+   * subject to change.
+   * @note Only the singular values and right singular vectors (not the left
+   *       singular vectors) that computeSVD computes are meaningful when
+   *       using multiple executors/machines. IndexedRowMatrix provides an
+   *       analogous computeSVD function that computes meaningful left
+   *       singular vectors.
    */
   @Since("1.0.0")
   def computeSVD(
@@ -321,9 +322,11 @@ class RowMatrix @Since("1.0.0") (
   }
 
   /**
-   * Computes the covariance matrix, treating each row as an observation. Note that this cannot
-   * be computed on matrices with more than 65535 columns.
+   * Computes the covariance matrix, treating each row as an observation.
+   *
    * @return a local dense matrix of size n x n
+   *
+   * @note This cannot be computed on matrices with more than 65535 columns.
    */
   @Since("1.0.0")
   def computeCovariance(): Matrix = {
@@ -371,12 +374,12 @@ class RowMatrix @Since("1.0.0") (
    * The row data do not need to be "centered" first; it is not necessary for
    * the mean of each column to be 0.
    *
-   * Note that this cannot be computed on matrices with more than 65535 columns.
-   *
    * @param k number of top principal components.
    * @return a matrix of size n-by-k, whose columns are principal components, and
    * a vector of values which indicate how much variance each principal component
    * explains
+   *
+   * @note This cannot be computed on matrices with more than 65535 columns.
    */
   @Since("1.6.0")
   def computePrincipalComponentsAndExplainedVariance(k: Int): (Matrix, Vector) = {
@@ -530,7 +533,7 @@ class RowMatrix @Since("1.0.0") (
    * decomposition (factorization) for the [[RowMatrix]] of a tall and skinny shape.
    * Reference:
    *  Paul G. Constantine, David F. Gleich. "Tall and skinny QR factorizations in MapReduce
-   *  architectures"  ([[http://dx.doi.org/10.1145/1996092.1996103]])
+   *  architectures" (see <a href="http://dx.doi.org/10.1145/1996092.1996103">here</a>)
    *
    * @note Only the R (not the Q) in the QR decomposition is meaningful when
    *       using multiple executors/machines. IndexedRowMatrix provides an

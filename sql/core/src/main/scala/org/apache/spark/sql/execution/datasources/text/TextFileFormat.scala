@@ -19,11 +19,7 @@ package org.apache.spark.sql.execution.datasources.text
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, Path}
-import org.apache.hadoop.io.{NullWritable, Text}
-import org.apache.hadoop.io.compress.GzipCodec
-import org.apache.hadoop.mapreduce.{Job, RecordWriter, TaskAttemptContext}
-import org.apache.hadoop.mapreduce.lib.output.{FileOutputFormat, TextOutputFormat}
-import org.apache.hadoop.util.ReflectionUtils
+import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext}
 
 import org.apache.spark.TaskContext
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
@@ -75,11 +71,14 @@ class TextFileFormat extends TextBasedFileFormat with DataSourceRegister {
 
     new OutputWriterFactory {
       override def newInstance(
-          stagingDir: String,
-          fileNamePrefix: String,
+          path: String,
           dataSchema: StructType,
           context: TaskAttemptContext): OutputWriter = {
-        new TextOutputWriter(stagingDir, fileNamePrefix, dataSchema, context)
+        new TextOutputWriter(path, dataSchema, context)
+      }
+
+      override def getFileExtension(context: TaskAttemptContext): String = {
+        ".txt" + CodecStreams.getCompressionExtension(context)
       }
     }
   }
@@ -124,50 +123,24 @@ class TextFileFormat extends TextBasedFileFormat with DataSourceRegister {
 }
 
 class TextOutputWriter(
-    stagingDir: String,
-    fileNamePrefix: String,
+    path: String,
     dataSchema: StructType,
     context: TaskAttemptContext)
   extends OutputWriter {
 
-  override val path: String = {
-    val compressionExtension = TextOutputWriter.getCompressionExtension(context)
-    new Path(stagingDir, fileNamePrefix + ".txt" + compressionExtension).toString
-  }
-
-  private[this] val buffer = new Text()
-
-  private val recordWriter: RecordWriter[NullWritable, Text] = {
-    new TextOutputFormat[NullWritable, Text]() {
-      override def getDefaultWorkFile(context: TaskAttemptContext, extension: String): Path = {
-        new Path(path)
-      }
-    }.getRecordWriter(context)
-  }
+  private val writer = CodecStreams.createOutputStream(context, new Path(path))
 
   override def write(row: Row): Unit = throw new UnsupportedOperationException("call writeInternal")
 
   override protected[sql] def writeInternal(row: InternalRow): Unit = {
-    val utf8string = row.getUTF8String(0)
-    buffer.set(utf8string.getBytes)
-    recordWriter.write(NullWritable.get(), buffer)
+    if (!row.isNullAt(0)) {
+      val utf8string = row.getUTF8String(0)
+      utf8string.writeTo(writer)
+    }
+    writer.write('\n')
   }
 
   override def close(): Unit = {
-    recordWriter.close(context)
-  }
-}
-
-
-object TextOutputWriter {
-  /** Returns the compression codec extension to be used in a file name, e.g. ".gzip"). */
-  def getCompressionExtension(context: TaskAttemptContext): String = {
-    // Set the compression extension, similar to code in TextOutputFormat.getDefaultWorkFile
-    if (FileOutputFormat.getCompressOutput(context)) {
-      val codecClass = FileOutputFormat.getOutputCompressorClass(context, classOf[GzipCodec])
-      ReflectionUtils.newInstance(codecClass, context.getConfiguration).getDefaultExtension
-    } else {
-      ""
-    }
+    writer.close()
   }
 }
