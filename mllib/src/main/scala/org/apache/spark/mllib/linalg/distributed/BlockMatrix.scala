@@ -553,31 +553,33 @@ class BlockMatrix @Since("1.3.0") (
      *       of V to be same as the number of columns in each block of A.
      */
     def generateRandomMatrices(k: Int, sc: SparkContext): BlockMatrix = {
-      val limit = 65535
-      if (numCols().toInt < limit) {
-        val data = Seq.tabulate(numCols().toInt)(n =>
-          (n.toLong, Vectors.fromBreeze(BDV.rand(k))))
-          .map(x => IndexedRow(x._1, x._2))
-        val indexedRows: RDD[IndexedRow] = sc.parallelize(data,
-          createPartitioner().numPartitions)
-        new IndexedRowMatrix(indexedRows).
-          toBlockMatrix(colsPerBlock, rowsPerBlock)
-      } else {
-        // Generate a n-by-k BlockMatrix: we first generate a sequence of
-        // RDD[Vector] where each RDD[Vector] contains either 65535 rows or
-        // n mod 65535 rows. The number of elements in the sequence is
-        // ceiling(n/65535).
-        val num = ceil(numCols().toFloat/limit).toInt
-        val rddsBlock = Seq.tabulate(num)(m =>
-          sc.parallelize(Seq.tabulate(if (m < numCols/limit) limit
-          else numCols().toInt%limit)(n => (m.toLong * limit + n,
-            Vectors.fromBreeze(BDV.rand(k))))
-            .map(x => IndexedRow(x._1, x._2)),
-            createPartitioner().numPartitions))
-        val rddBlockSeq = sc.union(rddsBlock)
-        new IndexedRowMatrix(rddBlockSeq).
-          toBlockMatrix(colsPerBlock, rowsPerBlock)
-      }
+      val rowPartitions = math.ceil(numCols().toInt * 1.0 / colsPerBlock).toInt
+      val colPartitions = math.ceil(k * 1.0 / rowsPerBlock).toInt
+      val lastColBlock = k % rowsPerBlock
+      val lastRowBlock = numCols().toInt % colsPerBlock
+
+      val data = sc.parallelize(Seq.tabulate(rowPartitions * colPartitions)(
+        n => ((n / colPartitions, n % colPartitions),
+          if (n % colPartitions == colPartitions - 1 && n / colPartitions ==
+            rowPartitions - 1 && lastColBlock > 0 && lastRowBlock > 0) {
+            // last columnBlock and last RowBlock
+            Matrices.fromBreeze(BDM.rand(lastRowBlock,
+              lastColBlock, breeze.stats.distributions.Rand.gaussian))
+          } else if (n % colPartitions == colPartitions - 1 && lastColBlock > 0) {
+            // last columnBlock
+            Matrices.fromBreeze(BDM.rand(colsPerBlock,
+              lastColBlock, breeze.stats.distributions.Rand.gaussian))
+          } else if (n / colPartitions == rowPartitions - 1 && lastRowBlock > 0) {
+            // last rowBlock
+            Matrices.fromBreeze(BDM.rand(lastRowBlock,
+              rowsPerBlock, breeze.stats.distributions.Rand.gaussian))
+          } else {
+            // not last columnBlock nor last rowBlock
+            Matrices.fromBreeze(BDM.rand(colsPerBlock,
+              rowsPerBlock, breeze.stats.distributions.Rand.gaussian))
+          })), createPartitioner().numPartitions)
+
+      new BlockMatrix(data, colsPerBlock, rowsPerBlock)
     }
 
     /**
