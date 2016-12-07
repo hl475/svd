@@ -22,7 +22,6 @@ import scala.util.Random
 
 import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, Matrix => BM,
 SparseVector => BSV, Vector => BV}
-import breeze.numerics.ceil
 
 import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
@@ -538,6 +537,9 @@ class BlockMatrix @Since("1.3.0") (
                  isRandom: Boolean = true):
   SingularValueDecomposition[BlockMatrix, Matrix] = {
 
+    // Form and store the transpose At.
+    val At = transpose
+
     /**
      * Generate a random [[BlockMatrix]] to compute the singular
      * value decomposition.
@@ -558,26 +560,33 @@ class BlockMatrix @Since("1.3.0") (
       val lastColBlock = k % rowsPerBlock
       val lastRowBlock = numCols().toInt % colsPerBlock
 
-      val data = sc.parallelize(Seq.tabulate(rowPartitions * colPartitions)(
-        n => ((n / colPartitions, n % colPartitions),
-          if (n % colPartitions == colPartitions - 1 && n / colPartitions ==
-            rowPartitions - 1 && lastColBlock > 0 && lastRowBlock > 0) {
-            // last columnBlock and last RowBlock
-            Matrices.fromBreeze(BDM.rand(lastRowBlock,
-              lastColBlock, breeze.stats.distributions.Rand.gaussian))
-          } else if (n % colPartitions == colPartitions - 1 && lastColBlock > 0) {
-            // last columnBlock
-            Matrices.fromBreeze(BDM.rand(colsPerBlock,
-              lastColBlock, breeze.stats.distributions.Rand.gaussian))
-          } else if (n / colPartitions == rowPartitions - 1 && lastRowBlock > 0) {
-            // last rowBlock
-            Matrices.fromBreeze(BDM.rand(lastRowBlock,
-              rowsPerBlock, breeze.stats.distributions.Rand.gaussian))
-          } else {
-            // not last columnBlock nor last rowBlock
-            Matrices.fromBreeze(BDM.rand(colsPerBlock,
-              rowsPerBlock, breeze.stats.distributions.Rand.gaussian))
-          })), createPartitioner().numPartitions)
+      val numPartitions = rowPartitions * colPartitions
+
+      val data = sc.parallelize(0 until numPartitions, numPartitions).persist().
+        mapPartitionsWithIndex{(idx, iter) =>
+          val random = new Random(idx)
+          iter.map(i => ((i/colPartitions, i%colPartitions), {
+            val (p, q) = {
+              if (i % colPartitions == colPartitions - 1 &&
+                i / colPartitions == rowPartitions - 1 && lastColBlock > 0
+                && lastRowBlock > 0) {
+                // last columnBlock and last RowBlock
+                (lastRowBlock, lastColBlock)
+              } else if (i % colPartitions == colPartitions - 1
+                && lastColBlock > 0) {
+                // last columnBlock
+                (colsPerBlock, lastColBlock)
+              } else if (i / colPartitions == rowPartitions - 1
+                && lastRowBlock > 0) {
+                // last rowBlock
+                (lastRowBlock, rowsPerBlock)
+              } else {
+                // not last columnBlock nor last rowBlock
+                (colsPerBlock, rowsPerBlock)
+              }}
+            Matrices.dense(p, q, Array.fill(p * q)(random.nextGaussian()))
+          }))
+        }
 
       new BlockMatrix(data, colsPerBlock, rowsPerBlock)
     }
@@ -601,8 +610,8 @@ class BlockMatrix @Since("1.3.0") (
      */
     def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean, isGram: Boolean):
     SingularValueDecomposition[BlockMatrix, Matrix] = {
-      // Compute B = A' * Q.
-      val B = transpose.multiply(Q)
+      // Compute B = At * Q.
+      val B = At.multiply(Q)
 
       // Find SVD of B such that B = V * S * X'.
       val svdResult = B.toIndexedRowMatrix().tallSkinnySVD(
@@ -632,9 +641,9 @@ class BlockMatrix @Since("1.3.0") (
     var y = x.orthonormal(sc, isGram, ifTwice = false)
 
     for (i <- 0 until iteration) {
-      // V = A' * V,  with the V on the left now known as a, and the V on
+      // V = At * V,  with the V on the left now known as a, and the V on
       // the right known as y.
-      val a = transpose.multiply(y)
+      val a = At.multiply(y)
       // Orthonormalize V (now known as a).
       val b = a.orthonormal(sc, isGram, ifTwice = false)
       // V = A * V, with the V on the left now known as c, and the V on
@@ -724,6 +733,9 @@ class BlockMatrix @Since("1.3.0") (
       new IndexedRowMatrix(indexedRows).toBlockMatrix(colsPerBlock, 1)
     }
 
+    // Form and store the transpose.
+    val At = transpose
+
     // Find the largest singular value of A using power method.
     for (i <- 0 until iteration) {
       // normalize v.
@@ -733,7 +745,7 @@ class BlockMatrix @Since("1.3.0") (
       // normalize v.
       v = unit(Av, sc)
       // v = A' * v.
-      v = transpose.multiply(v)
+      v = At.multiply(v)
     }
 
     // Calculate the 2-norm of final v.
