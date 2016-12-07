@@ -707,30 +707,38 @@ class BlockMatrix @Since("1.3.0") (
      * @return a [[BlockMatrix]] such that it has unit norm.
      */
     def unit(v : BlockMatrix, sc: SparkContext): BlockMatrix = {
-      // v = v / norm(v).
-      val temp = Vectors.dense(v.toIndexedRowMatrix().toBreeze().toArray)
-      val vUnit = temp.asBreeze * (1.0 / Vectors.norm(temp, 2))
+      // Find the norm of v.
+      val vSquareSum = v.blocks.map{ case ((a, b), c) =>
+        c.toArray.map(x => x*x).sum}.sum()
+      // Normalize v.
+      val vUnit = v.blocks.map{ case((a, b), c) =>
+        ((a, b), c.map(x => x/math.sqrt(vSquareSum)))}
 
-      // Convert v back to BlockMatrix.
-      val indexedRow = Seq.tabulate(v.numRows().toInt)(n => (n.toLong,
-        Vectors.dense(vUnit(n)))).map(x => IndexedRow(x._1, x._2))
-      new IndexedRowMatrix(sc.parallelize(indexedRow)).
-        toBlockMatrix(v.rowsPerBlock, v.colsPerBlock)
+      new BlockMatrix(vUnit, v.rowsPerBlock, v.colsPerBlock)
     }
 
     // Generate a random vector v.
     var v = {
-      val data = Seq.tabulate(numCols().toInt)(n =>
-        (n.toLong, Vectors.fromBreeze(BDV.rand(1))))
-        .map(x => IndexedRow(x._1, x._2))
-      val indexedRows: RDD[IndexedRow] = sc.parallelize(data,
-        createPartitioner().numPartitions)
-      // v has colsPerBlock for the number of rows in each block, and 1
-      // as the number of columns in each block. We will
-      // perform matrix multiplication with A, i.e., A * v. We want the number
-      // of rows in each block of v to be same as the number of columns in
-      // each block A.
-      new IndexedRowMatrix(indexedRows).toBlockMatrix(colsPerBlock, 1)
+      val rowPartitions = math.ceil(numCols().toInt * 1.0 / colsPerBlock).toInt
+      val lastRowBlock = numCols().toInt % colsPerBlock
+
+      val data = sc.parallelize(0 until rowPartitions, rowPartitions).persist().
+        mapPartitionsWithIndex{(idx, iter) =>
+          val random = new Random(idx)
+          iter.map(i => ((i, 0), {
+            val p = {
+              if (i == rowPartitions - 1 && lastRowBlock > 0) {
+                // last rowBlock
+                lastRowBlock
+              } else {
+                // not last rowBlock
+                colsPerBlock
+              }}
+            Matrices.dense(p, 1, Array.fill(p)(random.nextGaussian()))
+          }))
+        }
+
+      new BlockMatrix(data, colsPerBlock, 1)
     }
 
     // Form and store the transpose.
