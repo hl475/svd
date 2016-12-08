@@ -766,6 +766,8 @@ class IndexedRowMatrix @Since("1.0.0") (
     def generateDS(iteration: Int = 2, nCols: Int): (BDM[Complex], BDM[Int]) = {
       val shuffleIndex = new BDM[Int](iteration, nCols)
       val randUnit = new BDM[Complex](iteration, nCols)
+
+      Random.setSeed(851342769.toLong)
       for (i <- 0 until iteration) {
         // Random permuatation of integers from 1 to n.
         shuffleIndex(i, ::) := shuffle(BDV.tabulate(nCols)(i => i)).t
