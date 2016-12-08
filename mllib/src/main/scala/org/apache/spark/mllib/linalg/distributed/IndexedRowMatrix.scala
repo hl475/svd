@@ -773,8 +773,8 @@ class IndexedRowMatrix @Since("1.0.0") (
         // Generate random complex number with absolute value 1. These random
         // complex numbers are uniformly distributed over the unit circle.
         for (j <- 0 until nCols) {
-          Random.setSeed((851342769 + j).toLong)
-          val randComplex = Complex(Random.nextGaussian(),
+          val random = new Random(851342769L + j.toLong)
+          val randComplex = Complex(random.nextGaussian(),
             Random.nextGaussian())
           randUnit(i, j) = randComplex / randComplex.abs
         }

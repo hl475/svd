@@ -564,7 +564,7 @@ class BlockMatrix @Since("1.3.0") (
 
       val data = sc.parallelize(0 until numPartitions, numPartitions).persist().
         mapPartitionsWithIndex{(idx, iter) =>
-          val random = new Random(158342769 + idx)
+          val random = new Random(158342769L + idx.toLong)
           iter.map(i => ((i/colPartitions, i%colPartitions), {
             val (p, q) = {
               if (i % colPartitions == colPartitions - 1 &&
@@ -584,7 +584,7 @@ class BlockMatrix @Since("1.3.0") (
                 // not last columnBlock nor last rowBlock
                 (colsPerBlock, rowsPerBlock)
               }}
-            Matrices.dense(p, q, Array.fill(p * q)(Random.nextGaussian()))
+            Matrices.dense(p, q, Array.fill(p * q)(random.nextGaussian()))
           }))
         }
 
@@ -632,7 +632,7 @@ class BlockMatrix @Since("1.3.0") (
     }
 
     // Whether to set the random seed or not. Set the seed would help debug.
-    if (!isRandom) Random.setSeed(513427689.toLong)
+    if (!isRandom) Random.setSeed(513427689L)
     val V = generateRandomMatrices(k, sc)
 
     // V = A * V, with the V on the left now known as x.
@@ -724,7 +724,7 @@ class BlockMatrix @Since("1.3.0") (
 
       val data = sc.parallelize(0 until rowPartitions, rowPartitions).persist().
         mapPartitionsWithIndex{(idx, iter) =>
-          val random = new Random(951342768 + idx)
+          val random = new Random(951342768L + idx.toLong)
           iter.map(i => ((i, 0), {
             val p = {
               if (i == rowPartitions - 1 && lastRowBlock > 0) {
@@ -734,7 +734,7 @@ class BlockMatrix @Since("1.3.0") (
                 // not last rowBlock
                 colsPerBlock
               }}
-            Matrices.dense(p, 1, Array.fill(p)(Random.nextGaussian()))
+            Matrices.dense(p, 1, Array.fill(p)(random.nextGaussian()))
           }))
         }
 
