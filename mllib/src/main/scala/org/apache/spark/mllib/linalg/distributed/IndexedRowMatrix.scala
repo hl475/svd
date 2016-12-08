@@ -767,13 +767,13 @@ class IndexedRowMatrix @Since("1.0.0") (
       val shuffleIndex = new BDM[Int](iteration, nCols)
       val randUnit = new BDM[Complex](iteration, nCols)
 
-      Random.setSeed(851342769.toLong)
       for (i <- 0 until iteration) {
         // Random permuatation of integers from 1 to n.
         shuffleIndex(i, ::) := shuffle(BDV.tabulate(nCols)(i => i)).t
         // Generate random complex number with absolute value 1. These random
         // complex numbers are uniformly distributed over the unit circle.
         for (j <- 0 until nCols) {
+          Random.setSeed((851342769 + j).toLong)
           val randComplex = Complex(Random.nextGaussian(),
             Random.nextGaussian())
           randUnit(i, j) = randComplex / randComplex.abs

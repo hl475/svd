@@ -564,6 +564,7 @@ class BlockMatrix @Since("1.3.0") (
 
       val data = sc.parallelize(0 until numPartitions, numPartitions).persist().
         mapPartitionsWithIndex{(idx, iter) =>
+          val random = new Random(158342769 + idx)
           iter.map(i => ((i/colPartitions, i%colPartitions), {
             val (p, q) = {
               if (i % colPartitions == colPartitions - 1 &&
@@ -721,9 +722,9 @@ class BlockMatrix @Since("1.3.0") (
       val rowPartitions = math.ceil(numCols().toInt * 1.0 / colsPerBlock).toInt
       val lastRowBlock = numCols().toInt % colsPerBlock
 
-      Random.setSeed(951342768.toLong)
       val data = sc.parallelize(0 until rowPartitions, rowPartitions).persist().
         mapPartitionsWithIndex{(idx, iter) =>
+          val random = new Random(951342768 + idx)
           iter.map(i => ((i, 0), {
             val p = {
               if (i == rowPartitions - 1 && lastRowBlock > 0) {
