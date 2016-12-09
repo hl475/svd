@@ -21,9 +21,9 @@ import java.util.Arrays
 
 import scala.util.Random
 
-import breeze.linalg.{axpy => brzAxpy, eigSym, shuffle, svd => brzSvd,
-  DenseMatrix => BDM, DenseVector => BDV, MatrixSingularException,
-  SparseVector => BSV}
+import breeze.linalg.{*, axpy => brzAxpy, eigSym, shuffle, svd => brzSvd,
+DenseMatrix => BDM, DenseVector => BDV, MatrixSingularException,
+SparseVector => BSV}
 import breeze.linalg.eigSym.EigSym
 import breeze.math.{i, Complex}
 import breeze.numerics.{sqrt => brzSqrt}
@@ -36,6 +36,7 @@ import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.stat.Statistics
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
+
 
 /**
  * Represents a row of [[org.apache.spark.mllib.linalg.distributed.IndexedRowMatrix]].
@@ -444,15 +445,10 @@ class IndexedRowMatrix @Since("1.0.0") (
           // R is singular. If R is singular, we set the corresponding
           // column of Q to 0.
           for ( i <- 0 until dim) {
-            if (math.abs(LHSMat(i, i)) > 1.0e-15 * FNorm) {
-              var sum = 0.0
-              for ( j <- 0 until i) {
-                sum += LHSMat(j, i) * v(j)
-              }
-              v(i) = (RHS(i) - sum) / LHSMat(i, i)
-            } else {
-              v(i) = 0.0
-            }
+            v(i) = if (math.abs(LHSMat(i, i)) > 1.0e-15 * FNorm) {
+              val sum = (0 until i).map{ j => LHSMat(j, i) * v(j)}.toArray.sum
+              (RHS(i) - sum) / LHSMat(i, i)
+            } else 0.0
           }
           IndexedRow(row.index, Vectors.fromBreeze(v))
         }
@@ -576,14 +572,9 @@ class IndexedRowMatrix @Since("1.0.0") (
         val V1 = svdResult1.V.asBreeze.toDenseMatrix
         val V2 = svdResult2.V.asBreeze.toDenseMatrix
         // Compute R1 = S1 * V1'.
-        val R1 = new BDM[Double](V1.cols, V1.rows)
-        for (i <- 0 until V1.cols) R1(i, ::) :=
-          (V1(::, i) * svdResult1.s(i)).t
+        val R1 = V1.mapPairs{case ((i, j), x) => x * svdResult1.s(j)}.t
         // Compute R2 = S2 * V2'.
-        val R2 = new BDM[Double](V2.cols, V2.rows)
-        for (i <- 0 until V2.cols) R2(i, ::) :=
-          (V2(::, i) * svdResult2.s(i)).t
-
+        val R2 = V2.mapPairs{case ((i, j), x) => x * svdResult2.s(j)}.t
         // Return U2 and R = R2 * R1.
         (svdResult2.U, R2 * R1)
       } else {
@@ -764,20 +755,19 @@ class IndexedRowMatrix @Since("1.0.0") (
      * @return a k-by-n complex matrix and a k-by-n int matrix.
      */
     def generateDS(iteration: Int = 2, nCols: Int): (BDM[Complex], BDM[Int]) = {
-      val shuffleIndex = new BDM[Int](iteration, nCols)
-      val randUnit = new BDM[Complex](iteration, nCols)
+      val temp = new BDM[Int](iteration, nCols)
 
-      for (i <- 0 until iteration) {
-        // Random permuatation of integers from 1 to n.
-        shuffleIndex(i, ::) := shuffle(BDV.tabulate(nCols)(i => i)).t
-        // Generate random complex number with absolute value 1. These random
-        // complex numbers are uniformly distributed over the unit circle.
-        for (j <- 0 until nCols) {
-          val random = new Random(851342769L + j.toLong)
-          val randComplex = Complex(random.nextGaussian(),
-            Random.nextGaussian())
-          randUnit(i, j) = randComplex / randComplex.abs
-        }
+      // Random permuatation of integers from 1 to n iteration times.
+      val shuffleIndex = temp(*, ::).map{dt =>
+        shuffle(BDV((0 until nCols).toArray))
+      }
+      // Generate random complex number with absolute value 1. These random
+      // complex numbers are uniformly distributed over the unit circle.
+      val randUnit = temp.mapPairs{case ((i, j), x) =>
+        val random = new Random(851342769L + j.toLong)
+        val randComplex = Complex(random.nextGaussian(),
+          Random.nextGaussian())
+        randComplex / randComplex.abs
       }
       (randUnit, shuffleIndex)
     }
@@ -830,10 +820,10 @@ class IndexedRowMatrix @Since("1.0.0") (
     val AB = rows.mapPartitions( iter =>
       if (iter.nonEmpty) {
         val temp = iter.toArray
-        val tempAfter = new Array[IndexedRow](temp.length)
-        for (i <- temp.indices) {
-          tempAfter(i) = dfs(iteration, isForward, randUnit, randIndex,
-            BDV(temp(i).vector.toArray), temp(i).index)
+        // var tempAfter = new Array[IndexedRow](temp.length)
+        val tempAfter = temp.map{ i =>
+          dfs(iteration, isForward, randUnit, randIndex,
+            BDV(i.vector.toArray), i.index)
         }
         Iterator.tabulate(temp.length)(tempAfter(_))
       } else {
