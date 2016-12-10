@@ -820,7 +820,6 @@ class IndexedRowMatrix @Since("1.0.0") (
     val AB = rows.mapPartitions( iter =>
       if (iter.nonEmpty) {
         val temp = iter.toArray
-        // var tempAfter = new Array[IndexedRow](temp.length)
         val tempAfter = temp.map{ i =>
           dfs(iteration, isForward, randUnit, randIndex,
             BDV(i.vector.toArray), i.index)
