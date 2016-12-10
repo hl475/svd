@@ -46,17 +46,19 @@ object PartialSVDExample {
     val mat = new BlockMatrix(sc.parallelize(blocks, 2), 2, 2)
 
     // Compute the top 4 singular values and corresponding singular vectors.
-    val svd: SingularValueDecomposition[BlockMatrix, Matrix] =
+    val svd: SingularValueDecomposition[BlockMatrix, BlockMatrix] =
       mat.partialSVD(4, sc, computeU = true)
-    val U: BlockMatrix = svd.U  // The U factor is a RowMatrix.
+    val U: BlockMatrix = svd.U  // The U factor is a BlockMatrix.
     val s: Vector = svd.s  // The singular values are stored in a local dense vector.
-    val V: Matrix = svd.V  // The V factor is a local dense matrix.
+    val V: BlockMatrix = svd.V  // The V factor is a BlockMatrix.
     // $example off$
-    val collect = U.toIndexedRowMatrix().toRowMatrix().rows.collect()
+    val collectU = U.toIndexedRowMatrix().toRowMatrix().rows.collect()
     println("U factor is:")
-    collect.foreach { vector => println(vector) }
+    collectU.foreach { vector => println(vector) }
     println(s"Singular values are: $s")
-    println(s"V factor is:\n$V")
+    println("V factor is:")
+    val collectV = V.toIndexedRowMatrix().toRowMatrix().rows.collect()
+    collectV.foreach { vector => println(vector) }
   }
 }
 // scalastyle:on println

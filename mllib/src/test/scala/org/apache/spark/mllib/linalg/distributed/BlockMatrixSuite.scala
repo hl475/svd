@@ -413,8 +413,7 @@ class BlockMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
           val S = svdResult.s
           val V = svdResult.V
           val reconstruct = U.toBreeze() * diag(S.asBreeze.
-            asInstanceOf[BDV[Double]]) * V.transpose.asBreeze.
-            asInstanceOf[BDM[Double]]
+            asInstanceOf[BDV[Double]]) * V.transpose.toBreeze()
           val diff = localMat - reconstruct
           val brzSvd.SVD(_, diffNorm, _) = brzSvd.reduced.apply(diff)
           val tol = if (isGram) 5.0e-6 else 5.0e-13

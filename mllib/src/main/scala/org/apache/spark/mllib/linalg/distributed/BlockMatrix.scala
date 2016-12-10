@@ -535,7 +535,7 @@ class BlockMatrix @Since("1.3.0") (
   def partialSVD(k: Int, sc: SparkContext, computeU: Boolean = false,
                  isGram: Boolean = false, iteration: Int = 2,
                  isRandom: Boolean = true):
-  SingularValueDecomposition[BlockMatrix, Matrix] = {
+  SingularValueDecomposition[BlockMatrix, BlockMatrix] = {
 
     // Form and store the transpose At.
     val At = transpose
@@ -611,7 +611,7 @@ class BlockMatrix @Since("1.3.0") (
      * to 15 digits.
      */
     def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean, isGram: Boolean):
-    SingularValueDecomposition[BlockMatrix, Matrix] = {
+    SingularValueDecomposition[BlockMatrix, BlockMatrix] = {
       // Compute B = At * Q.
       val B = At.multiply(Q)
 
@@ -620,13 +620,14 @@ class BlockMatrix @Since("1.3.0") (
         Math.min(k, B.nCols.toInt), sc, computeU = true, isGram, ifTwice = true)
 
       // Convert V's type.
-      val V = Matrices.fromBreeze(svdResult.U.toBreeze())
+      val V = svdResult.U.toBlockMatrix(colsPerBlock, rowsPerBlock)
 
       // Compute U amd return svd of A.
       if (computeU) {
         // U = Q * X.
         val XMat = svdResult.V
-        val U = Q.toIndexedRowMatrix().multiply(XMat).toBlockMatrix()
+        val U = Q.toIndexedRowMatrix().multiply(XMat).
+          toBlockMatrix(rowsPerBlock, colsPerBlock)
         SingularValueDecomposition(U, svdResult.s, V)
       } else {
         SingularValueDecomposition(null, svdResult.s, V)
