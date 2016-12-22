@@ -18,10 +18,12 @@
 package org.apache.spark.mllib.linalg.distributed
 
 import scala.collection.mutable.ArrayBuffer
+import scala.util.Random
 
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV}
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, Matrix => BM,
+SparseVector => BSV, Vector => BV}
 
-import org.apache.spark.{Partitioner, SparkException}
+import org.apache.spark.{Partitioner, SparkContext, SparkException}
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
@@ -335,7 +337,10 @@ class BlockMatrix @Since("1.3.0") (
     new BlockMatrix(transposedBlocks, colsPerBlock, rowsPerBlock, nCols, nRows)
   }
 
-  /** Collects data and assembles a local dense breeze matrix (for test only). */
+  /**
+   * Convert distributed storage of BlockMatrix into locally stored BDM, whereas
+   * asBreeze works on matrices stored locally and requires no memcopy.
+   */
   private[mllib] def toBreeze(): BDM[Double] = {
     val localMat = toLocalMatrix()
     new BDM[Double](localMat.numRows, localMat.numCols, localMat.toArray)
@@ -496,5 +501,265 @@ class BlockMatrix @Since("1.3.0") (
       throw new SparkException("colsPerBlock of A doesn't match rowsPerBlock of B. " +
         s"A.colsPerBlock: $colsPerBlock, B.rowsPerBlock: ${other.rowsPerBlock}")
     }
+  }
+
+  /**
+   * Computes the randomized singular value decomposition of this BlockMatrix.
+   * Denote this matrix by A (m x n), this will compute matrices U, S, V such
+   * that A ~ U * S * V', where the columns of U are orthonormal, S is a
+   * diagonal matrix with non-negative real numbers on the diagonal, and the
+   * columns of V are orthonormal.
+   *
+   * At most k largest non-zero singular values and associated vectors are
+   * returned. If there are k such values, then the dimensions of the return
+   * will be:
+   *  - U is a RowMatrix of size m x k that satisfies U' * U = eye(k),
+   *  - s is a Vector of size k, holding the singular values in
+   *  descending order,
+   *  - V is a Matrix of size n x k that satisfies V' * V = eye(k).
+   *
+   * @param k number of singular values to keep. We might return less than k
+   *          if there are numerically zero singular values.
+   * @param sc SparkContext, use to generate the random gaussian matrix.
+   * @param computeU whether to compute U.
+   * @param isGram whether to compute the Gram matrix for matrix
+   *               orthonormalization.
+   * @param iteration number of normalized power iterations to conduct.
+   * @param isRandom whether or not fix seed to generate random matrix.
+   * @return SingularValueDecomposition(U, s, V).
+   *
+   * @note if isGram is true, it will lose half or more of the precision
+   * of the arithmetic but could accelerate the computation.
+   */
+  @Since("2.0.0")
+  def partialSVD(k: Int, sc: SparkContext, computeU: Boolean = false,
+                 isGram: Boolean = false, iteration: Int = 2,
+                 isRandom: Boolean = true):
+  SingularValueDecomposition[BlockMatrix, BlockMatrix] = {
+
+    // Form and store the transpose At.
+    val At = transpose
+
+    /**
+     * Generate a random [[BlockMatrix]] to compute the singular
+     * value decomposition.
+     *
+     * @param k number of columns in this random [[BlockMatrix]].
+     * @param sc a [[SparkContext]] to generate the random [[BlockMatrix]].
+     * @return a random [[BlockMatrix]].
+     *
+     * @note the generated random [[BlockMatrix]] V has colsPerBlock for the
+     *       number of rows in each block, and rowsPerBlock for the number
+     *       of columns in each block. We will perform matrix multiplication
+     *       with A, i.e., A * V. We want the number of rows in each block
+     *       of V to be same as the number of columns in each block of A.
+     */
+    def generateRandomMatrices(k: Int, sc: SparkContext): BlockMatrix = {
+      val rowPartitions = math.ceil(numCols().toInt * 1.0 / colsPerBlock).toInt
+      val colPartitions = math.ceil(k * 1.0 / rowsPerBlock).toInt
+      val lastColBlock = k % rowsPerBlock
+      val lastRowBlock = numCols().toInt % colsPerBlock
+
+      val numPartitions = rowPartitions * colPartitions
+
+      val data = sc.parallelize(0 until numPartitions, numPartitions).persist().
+        mapPartitionsWithIndex{(idx, iter) =>
+          // Whether to set the random seed or not.
+          val random = if (isRandom) new Random(158342769L + idx.toLong)
+                        else new Random
+          iter.map(i => ((i/colPartitions, i%colPartitions), {
+            val (p, q) = {
+              if (i % colPartitions == colPartitions - 1 &&
+                i / colPartitions == rowPartitions - 1 && lastColBlock > 0
+                && lastRowBlock > 0) {
+                // last columnBlock and last RowBlock
+                (lastRowBlock, lastColBlock)
+              } else if (i % colPartitions == colPartitions - 1
+                && lastColBlock > 0) {
+                // last columnBlock
+                (colsPerBlock, lastColBlock)
+              } else if (i / colPartitions == rowPartitions - 1
+                && lastRowBlock > 0) {
+                // last rowBlock
+                (lastRowBlock, rowsPerBlock)
+              } else {
+                // not last columnBlock nor last rowBlock
+                (colsPerBlock, rowsPerBlock)
+              }}
+            Matrices.dense(p, q, Array.fill(p * q)(random.nextGaussian()))
+          }))
+        }
+
+      new BlockMatrix(data, colsPerBlock, rowsPerBlock)
+    }
+
+    /**
+     * Computes the partial singular value decomposition of the[[BlockMatrix]]
+     * A given an [[BlockMatrix]] Q such that A' ~ A' * Q * Q'. The columns
+     * of Q are orthonormal.
+     *
+     * @param Q a [[BlockMatrix]] with orthonormal columns.
+     * @param k number of singular values to compute.
+     * @param computeU whether to compute U.
+     * @param isGram whether to compute the Gram matrix for matrix
+     *               orthonormalization.
+     * @return SingularValueDecomposition[U, s, V], U = null if computeU = false.
+     *
+     * @note if isGram is true, it will lose half or more of the precision
+     * of the arithmetic but could accelerate the computation. It will
+     * orthonormalize twice to makes the columns of the matrix be orthonormal
+     * to 15 digits.
+     */
+    def lastStep(Q: BlockMatrix, k: Int, computeU: Boolean, isGram: Boolean):
+    SingularValueDecomposition[BlockMatrix, BlockMatrix] = {
+      // Compute B = At * Q.
+      val B = At.multiply(Q)
+
+      // Find SVD of B such that B = V * S * X'.
+      val svdResult = B.toIndexedRowMatrix().tallSkinnySVD(
+        Math.min(k, B.nCols.toInt), sc, computeU = true, isGram, ifTwice = true)
+
+      // Convert V's type.
+      val V = svdResult.U.toBlockMatrix(colsPerBlock, rowsPerBlock)
+
+      // Compute U amd return svd of A.
+      if (computeU) {
+        // U = Q * X.
+        val XMat = svdResult.V
+        val U = Q.toIndexedRowMatrix().multiply(XMat).
+          toBlockMatrix(rowsPerBlock, colsPerBlock)
+        SingularValueDecomposition(U, svdResult.s, V)
+      } else {
+        SingularValueDecomposition(null, svdResult.s, V)
+      }
+    }
+
+    val V = generateRandomMatrices(k, sc)
+
+    // V = A * V, with the V on the left now known as x.
+    val x = multiply(V)
+    // Orthonormalize V (now known as x).
+    var y = x.orthonormal(sc, isGram, ifTwice = false)
+
+    for (i <- 0 until iteration) {
+      // V = At * V,  with the V on the left now known as a, and the V on
+      // the right known as y.
+      val a = At.multiply(y)
+      // Orthonormalize V (now known as a).
+      val b = a.orthonormal(sc, isGram, ifTwice = false)
+      // V = A * V, with the V on the left now known as c, and the V on
+      // the right known as b.
+      val c = multiply(b)
+      // Orthonormalize V (now known as c). If it is the last iteration, we
+      // perform orthonormalization twice so the columns of left singular
+      // vectors of A will be orthonormal to 15 digits.
+      val ifTwice = if (i == iteration - 1) true else false
+      y = c.orthonormal(sc, isGram, ifTwice)
+    }
+
+    // Find SVD of A using V (now known as y).
+    lastStep(y, k, computeU, isGram)
+  }
+
+  /**
+   * Orthonormalize the columns of the [[BlockMatrix]] V by using
+   * tallSkinnySVD. We convert V to [[RowMatrix]] first, then apply
+   * tallSkinnySVD. The columns of the result orthonormal matrix are the left
+   * singular vectors of the input matrix V.
+   *
+   * @param sc SparkContext used to create RDDs if isGram = false.
+   * @param isGram whether to compute the Gram matrix when computing
+   *               tallSkinnySVD.
+   * @param ifTwice whether to compute orthonormalization twice to make
+   *                the columns of the matrix be orthonormal to nearly the
+   *                machine precision.
+   * @return a [[BlockMatrix]] whose columns are orthonormal vectors.
+   *
+   * @note if isGram is true, it will lose half or more of the precision
+   * of the arithmetic but could accelerate the computation.
+   */
+  @Since("2.0.0")
+  def orthonormal(sc: SparkContext = null, isGram: Boolean = false,
+                  ifTwice: Boolean = true): BlockMatrix = {
+    // Orthonormalize the columns of the input BlockMatrix.
+    val Q = toIndexedRowMatrix().tallSkinnySVD(nCols.toInt,
+      sc, computeU = true, isGram, ifTwice).U
+    Q.toBlockMatrix(rowsPerBlock, colsPerBlock)
+
+  }
+
+  /**
+   * Estimate the largest singular value of [[BlockMatrix]] A using
+   * power method.
+   *
+   * @param iteration number of iterations for power method.
+   * @param sc a [[SparkContext]] generates the normalized
+   *           vector in each iteration.
+   * @return a [[Double]] estimate of the largest singular value.
+   */
+  @Since("2.0.0")
+  def spectralNormEst(iteration: Int = 20, sc: SparkContext): Double = {
+    /**
+     * Normalize the [[BlockMatrix]] v which has one column such that it has
+     * unit norm.
+     *
+     * @param v the [[BlockMatrix]] which has one column.
+     * @param sc SparkContext, use to generate the normalized [[BlockMatrix]].
+     * @return a [[BlockMatrix]] such that it has unit norm.
+     */
+    def unit(v: BlockMatrix, sc: SparkContext): BlockMatrix = {
+
+      // Find the norm of v.
+      val vSquareSum = v.blocks.map{ case ((a, b), c) =>
+        c.toArray.map(x => x*x).sum}.sum()
+      // Normalize v.
+      val vUnit = v.blocks.map{ case((a, b), c) =>
+        ((a, b), c.map(x => x/math.sqrt(vSquareSum)))}
+
+      new BlockMatrix(vUnit, v.rowsPerBlock, v.colsPerBlock)
+    }
+
+    // Generate a random vector v.
+    var v = {
+      val rowPartitions = math.ceil(numCols().toInt * 1.0 / colsPerBlock).toInt
+      val lastRowBlock = numCols().toInt % colsPerBlock
+
+      val data = sc.parallelize(0 until rowPartitions, rowPartitions).persist().
+        mapPartitionsWithIndex{(idx, iter) =>
+          val random = new Random(951342768L + idx.toLong)
+          iter.map(i => ((i, 0), {
+            val p = {
+              if (i == rowPartitions - 1 && lastRowBlock > 0) {
+                // last rowBlock
+                lastRowBlock
+              } else {
+                // not last rowBlock
+                colsPerBlock
+              }}
+            Matrices.dense(p, 1, Array.fill(p)(random.nextGaussian()))
+          }))
+        }
+
+      new BlockMatrix(data, colsPerBlock, 1)
+    }
+
+    // Form and store the transpose.
+    val At = transpose
+
+    // Find the largest singular value of A using power method.
+    for (i <- 0 until iteration) {
+      // normalize v (now known as u).
+      val u = unit(v, sc)
+      // v = A * u (now known as Av).
+      val Av = multiply(u)
+      // normalize v (now known as w).
+      val w = unit(Av, sc)
+      // v = A' * v.
+      v = At.multiply(w)
+    }
+
+    // Calculate the 2-norm of final v.
+    math.sqrt(v.blocks.map{ case ((a, b), c) =>
+      c.toArray.map(x => x*x).sum}.sum())
   }
 }

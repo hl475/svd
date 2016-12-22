@@ -19,10 +19,11 @@ package org.apache.spark.mllib.linalg.distributed
 
 import java.{util => ju}
 
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, SparseVector => BSV}
+import breeze.linalg.{diag, svd => brzSvd, DenseMatrix => BDM,
+  DenseVector => BDV, SparseVector => BSV}
 
 import org.apache.spark.{SparkException, SparkFunSuite}
-import org.apache.spark.mllib.linalg.{DenseMatrix, DenseVector, Matrices, Matrix, SparseMatrix, SparseVector, Vectors}
+import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.util.MLlibTestSparkContext
 import org.apache.spark.mllib.util.TestingUtils._
 
@@ -388,5 +389,47 @@ class BlockMatrixSuite extends SparkFunSuite with MLlibTestSparkContext {
     assert(AT2.toBreeze() === AT.toBreeze())
     val A = AT2.transpose
     assert(A.toBreeze() === gridBasedMat.toBreeze())
+  }
+
+  test("Partial SVD") {
+    val blocks: Seq[((Int, Int), Matrix)] = Seq(
+      ((0, 0), new DenseMatrix(2, 2, Array(1.0, 0.0, 0.0, 2.0))),
+      ((0, 1), new DenseMatrix(2, 2, Array(0.0, 1.0, 0.0, 0.0))),
+      ((1, 0), new DenseMatrix(2, 2, Array(3.0, 0.0, 1.0, 1.0))),
+      ((1, 1), new DenseMatrix(2, 2, Array(1.0, 2.0, 0.0, 0.0))),
+      ((2, 1), new DenseMatrix(1, 2, Array(1.0, 0.0))))
+
+    val gridBasedMatLowRank = new BlockMatrix(sc.parallelize(blocks,
+       numPartitions), rowPerPart, colPerPart)
+    val localMat = gridBasedMatLowRank.toBreeze()
+    val n = gridBasedMatLowRank.numCols().toInt
+    for (k <- Seq(n, n - 1)) {
+      for (isGram <- Seq(true, false)) {
+        for (isRandom <- Seq(true, false)) {
+          val iteration = 2
+          val svdResult = gridBasedMatLowRank.partialSVD(k, sc,
+            computeU = true, isGram, iteration, isRandom)
+          val U = svdResult.U
+          val S = svdResult.s
+          val V = svdResult.V
+          val reconstruct = U.toBreeze() * diag(S.asBreeze.
+            asInstanceOf[BDV[Double]]) * V.transpose.toBreeze()
+          val diff = localMat - reconstruct
+          val brzSvd.SVD(_, diffNorm, _) = brzSvd.reduced.apply(diff)
+          val tol = if (isGram) 5.0e-6 else 5.0e-13
+          assert(diffNorm(0) ~== 0.0 absTol tol)
+          val svdWithoutU = gridBasedMat.partialSVD(k, sc,
+            computeU = false, isGram, iteration, isRandom)
+          assert(svdWithoutU.U === null)
+        }
+      }
+    }
+  }
+
+  test("Spectral norm estimation") {
+    val norm = gridBasedMat.spectralNormEst(iteration = 20, sc)
+    val localMat = gridBasedMat.toBreeze()
+    val brzSvd.SVD(_, localS, _) = brzSvd.reduced.apply(localMat)
+    assert(norm ~== localS(0) absTol 1e-6)
   }
 }

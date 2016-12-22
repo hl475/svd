@@ -21,14 +21,15 @@ import java.util.Arrays
 
 import scala.collection.mutable.ListBuffer
 
-import breeze.linalg.{axpy => brzAxpy, inv, svd => brzSvd, DenseMatrix => BDM, DenseVector => BDV,
-  MatrixSingularException, SparseVector => BSV}
+import breeze.linalg.{axpy => brzAxpy, svd => brzSvd, DenseMatrix => BDM,
+  DenseVector => BDV, MatrixSingularException, SparseVector => BSV}
 import breeze.numerics.{sqrt => brzSqrt}
 
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
-import org.apache.spark.mllib.stat.{MultivariateOnlineSummarizer, MultivariateStatisticalSummary}
+import org.apache.spark.mllib.stat.{MultivariateOnlineSummarizer,
+  MultivariateStatisticalSummary}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.random.XORShiftRandom
@@ -181,6 +182,11 @@ class RowMatrix @Since("1.0.0") (
    *
    * @note The conditions that decide which method to use internally and the default parameters are
    * subject to change.
+   * @note Only the singular values and right singular vectors (not the left
+   *       singular vectors) that computeSVD computes are meaningful when
+   *       using multiple executors/machines. IndexedRowMatrix provides an
+   *       analogous computeSVD function that computes meaningful left
+   *       singular vectors.
    */
   @Since("1.0.0")
   def computeSVD(
@@ -285,10 +291,6 @@ class RowMatrix @Since("1.0.0") (
     }
     val sk = i
 
-    if (sk < k) {
-      logWarning(s"Requested $k singular values but only found $sk nonzeros.")
-    }
-
     // Warn at the end of the run as well, for increased visibility.
     if (computeMode == SVDMode.DistARPACK && rows.getStorageLevel == StorageLevel.NONE) {
       logWarning("The input data was not directly cached, which may hurt performance if its"
@@ -317,6 +319,37 @@ class RowMatrix @Since("1.0.0") (
     } else {
       SingularValueDecomposition(null, s, V)
     }
+  }
+
+  /**
+   * Determine the effective rank
+   *
+   * @param k number of singular values to keep. We might return less than k if there are
+   *          numerically zero singular values. See rCond.
+   * @param sigmas singular values of matrix
+   * @param rCond the reciprocal condition number. All singular values smaller
+   *              than rCond * sigma(0) are treated as zero, where sigma(0) is
+   *              the largest singular value.
+   * @return a [[Int]]
+   */
+  def determineRank(k: Int, sigmas: BDV[Double], rCond: Double): Int = {
+    // Determine the effective rank.
+    val sigma0 = sigmas(0)
+    val threshold = rCond * sigma0
+    var i = 0
+    // sigmas might have a length smaller than k, if some Ritz values do not satisfy the convergence
+    // criterion specified by tol after max number of iterations.
+    // Thus use i < min(k, sigmas.length) instead of i < k.
+    if (sigmas.length < k) {
+      logWarning(s"Requested $k singular values but only found ${sigmas.length} converged.")
+    }
+    while (i < math.min(k, sigmas.length) && sigmas(i) >= threshold) {
+      i += 1
+    }
+    if (i < k) {
+      logWarning(s"Requested $k singular values but only found $i nonzeros.")
+    }
+    i
   }
 
   /**
@@ -533,11 +566,58 @@ class RowMatrix @Since("1.0.0") (
    *  Paul G. Constantine, David F. Gleich. "Tall and skinny QR factorizations in MapReduce
    *  architectures" (see <a href="http://dx.doi.org/10.1145/1996092.1996103">here</a>)
    *
+   * @note Only the R (not the Q) in the QR decomposition is meaningful when
+   *       using multiple executors/machines. IndexedRowMatrix provides an
+   *       analogous tallSkinnyQR function that computes a meaningful Q in a QR
+   *       decomposition.
+   *
    * @param computeQ whether to computeQ
    * @return QRDecomposition(Q, R), Q = null if computeQ = false.
    */
   @Since("1.5.0")
   def tallSkinnyQR(computeQ: Boolean = false): QRDecomposition[RowMatrix, Matrix] = {
+    /**
+     * Solve Q*R = A for Q using forward substitution where A = [[RowMatrix]]
+     * and R is upper-triangular. If the (i,i)th entry of R is close to 0, then
+     * we set the ith column of Q to 0, as well.
+     *
+     * @param R upper-triangular matrix.
+     * @return Q [[RowMatrix]] such that Q*R = A.
+     */
+    def forwardSolve(R: breeze.linalg.DenseMatrix[Double]):
+    RowMatrix = {
+      val m = numRows()
+      val n = R.cols
+      val dim = math.min(R.rows, n)
+      val Bb = rows.context.broadcast(R(0 until dim, 0 until dim).toArray)
+
+      val AB = rows.mapPartitions { iter =>
+        val LHS = Bb.value
+        val LHSMat = Matrices.dense(dim, dim, LHS).asBreeze
+        val FNorm = Vectors.norm(Vectors.dense(LHS), 2.0)
+        iter.map { row =>
+          val RHS = row.asBreeze.toArray
+          val v = BDV.zeros[Double] (dim)
+          // We don't use LAPACK here since it will be numerically unstable if
+          // R is singular. If R is singular, we set the corresponding
+          // column of Q to 0.
+          for ( i <- 0 until dim) {
+            if (math.abs(LHSMat(i, i)) > 1.0e-15 * FNorm) {
+              var sum = 0.0
+              for ( j <- 0 until i) {
+                sum += LHSMat(j, i) * v(j)
+              }
+              v(i) = (RHS(i) - sum) / LHSMat(i, i)
+            } else {
+              v(i) = 0.0
+            }
+          }
+          Vectors.fromBreeze(v)
+        }
+      }
+      new RowMatrix(AB, m, dim)
+    }
+
     val col = numCols().toInt
     // split rows horizontally into smaller matrices, and compute QR for each of them
     val blockQRs = rows.retag(classOf[Vector]).glom().filter(_.length != 0).map { partRows =>
@@ -559,8 +639,7 @@ class RowMatrix @Since("1.0.0") (
     val finalR = Matrices.fromBreeze(combinedR.toDenseMatrix)
     val finalQ = if (computeQ) {
       try {
-        val invR = inv(combinedR)
-        this.multiply(Matrices.fromBreeze(invR))
+        forwardSolve(combinedR)
       } catch {
         case err: MatrixSingularException =>
           logWarning("R is not invertible and return Q as null")
@@ -662,6 +741,10 @@ class RowMatrix @Since("1.0.0") (
     new CoordinateMatrix(sims, numCols(), numCols())
   }
 
+  /**
+   * Convert distributed storage of RowMatrix into locally stored BDM, whereas
+   * asBreeze works on matrices stored locally and requires no memcopy.
+   */
   private[mllib] override def toBreeze(): BDM[Double] = {
     val m = numRows().toInt
     val n = numCols().toInt
