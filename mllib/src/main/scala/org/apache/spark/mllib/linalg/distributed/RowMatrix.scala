@@ -182,6 +182,11 @@ class RowMatrix @Since("1.0.0") (
    *
    * @note The conditions that decide which method to use internally and the default parameters are
    * subject to change.
+   * @note Only the singular values and right singular vectors (not the left
+   *       singular vectors) that computeSVD computes are meaningful when
+   *       using multiple executors/machines. IndexedRowMatrix provides an
+   *       analogous computeSVD function that computes meaningful left
+   *       singular vectors.
    */
   @Since("1.0.0")
   def computeSVD(
