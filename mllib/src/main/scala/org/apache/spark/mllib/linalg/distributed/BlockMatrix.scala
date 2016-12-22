@@ -707,7 +707,8 @@ class BlockMatrix @Since("1.3.0") (
      * @param sc SparkContext, use to generate the normalized [[BlockMatrix]].
      * @return a [[BlockMatrix]] such that it has unit norm.
      */
-    def unit(v : BlockMatrix, sc: SparkContext): BlockMatrix = {
+    def unit(v: BlockMatrix, sc: SparkContext): BlockMatrix = {
+
       // Find the norm of v.
       val vSquareSum = v.blocks.map{ case ((a, b), c) =>
         c.toArray.map(x => x*x).sum}.sum()
@@ -747,17 +748,18 @@ class BlockMatrix @Since("1.3.0") (
 
     // Find the largest singular value of A using power method.
     for (i <- 0 until iteration) {
-      // normalize v.
-      v = unit(v, sc)
-      // v = A * v.
-      val Av = multiply(v)
-      // normalize v.
-      v = unit(Av, sc)
+      // normalize v (now known as u).
+      val u = unit(v, sc)
+      // v = A * u (now known as Av).
+      val Av = multiply(u)
+      // normalize v (now known as w).
+      val w = unit(Av, sc)
       // v = A' * v.
-      v = At.multiply(v)
+      v = At.multiply(w)
     }
 
     // Calculate the 2-norm of final v.
-    Vectors.norm(Vectors.dense(v.toBreeze().toArray), 2)
+    math.sqrt(v.blocks.map{ case ((a, b), c) =>
+      c.toArray.map(x => x*x).sum}.sum())
   }
 }
